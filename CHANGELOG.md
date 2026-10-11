@@ -21,6 +21,10 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
 <!-- skipped: v0.1.25 -->
 <!-- skipped: v0.1.8 -->
 
+## v0.1.273 (2026-10-11)
+
+- Fix missing pull request details and check status in the dashboard for bare repository worktrees. ([#321](https://github.com/raine/workmux/issues/321))
+
 ## v0.1.272 (2026-10-09)
 
 - Reduce sidebar background CPU use by avoiding repeated Git calculations and project config lookups.
