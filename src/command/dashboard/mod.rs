@@ -30,6 +30,7 @@ mod app;
 mod diff;
 mod diff_ops;
 mod keymap;
+mod layout;
 mod mouse;
 mod scope;
 mod settings;
@@ -152,7 +153,7 @@ pub fn run(
     // get queued and processed before the app is ready.
     let mut app = App::new(mux, session_filter, event_tx.clone())?;
 
-    // CLI preview size overrides config/tmux if provided
+    // CLI preview size overrides config and saved preference if provided
     if let Some(size) = cli_preview_size {
         app.preview_size = size;
     }

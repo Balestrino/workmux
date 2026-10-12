@@ -255,7 +255,10 @@ pub struct DashboardConfig {
     /// Default: "!workmux merge"
     pub merge: Option<String>,
 
-    /// Size of the preview pane as a percentage of terminal height (1-90).
+    /// Dashboard arrangement: stacked (default) or side_by_side.
+    pub layout: Option<DashboardLayout>,
+
+    /// Size of the preview pane as a percentage of content height or width (10-90).
     /// Default: 60 (60% for preview, 40% for table)
     pub preview_size: Option<u8>,
 
@@ -281,6 +284,17 @@ pub struct DashboardConfig {
     /// Close the dashboard after jumping to an agent or worktree.
     /// Default: true.
     pub close_on_jump: Option<bool>,
+}
+
+/// Arrangement of the dashboard table and preview.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DashboardLayout {
+    /// Table above the preview.
+    #[default]
+    Stacked,
+    /// Preview on the left, table on the right.
+    SideBySide,
 }
 
 /// A configurable column of the dashboard agents table.
@@ -3181,6 +3195,7 @@ impl Config {
                 .or(self.dashboard.input_exit_key),
             commit: project.dashboard.commit.or(self.dashboard.commit),
             merge: project.dashboard.merge.or(self.dashboard.merge),
+            layout: project.dashboard.layout.or(self.dashboard.layout),
             preview_size: project
                 .dashboard
                 .preview_size
@@ -3730,6 +3745,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 # dashboard:
 #   commit: "Commit staged changes with a descriptive message"
 #   merge: "!workmux merge"
+#   layout: stacked # or side_by_side (preview left, table right)
 #   preview_size: 60
 #   agent_columns: [number, project, worktree, git, pr, status, time, title]
 #   worktree_columns: [number, project, worktree, git, pr, mux, age, agent]
@@ -3930,11 +3946,11 @@ mod tests {
     use super::{
         AgentColumn, AgentEnvValue, AgentIconConfig, AgentIconDetails, AllowedDomainDetails,
         AllowedDomainEntry, CLEANUP_NODE_MODULES_PLACEHOLDER, Config, ContainerConfig,
-        ContainerDevice, DEFAULT_AGENT_COLUMNS, DEFAULT_WORKTREE_COLUMNS, ExtraMount, FileConfig,
-        LayoutConfig, LimaConfig, NODE_MODULES_CLEANUP_SCRIPT, NetworkConfig, NetworkPolicy,
-        PaneConfig, SandboxConfig, SandboxRuntime, SandboxTarget, SidebarEnterAction,
-        SidebarHeight, SidebarPosition, SidebarWidth, SplitDirection, ToolchainMode,
-        WindowPlacement, WorktreeColumn, is_agent_command, validate_domain,
+        ContainerDevice, DEFAULT_AGENT_COLUMNS, DEFAULT_WORKTREE_COLUMNS, DashboardLayout,
+        ExtraMount, FileConfig, LayoutConfig, LimaConfig, NODE_MODULES_CLEANUP_SCRIPT,
+        NetworkConfig, NetworkPolicy, PaneConfig, SandboxConfig, SandboxRuntime, SandboxTarget,
+        SidebarEnterAction, SidebarHeight, SidebarPosition, SidebarWidth, SplitDirection,
+        ToolchainMode, WindowPlacement, WorktreeColumn, is_agent_command, validate_domain,
         validate_group_add_entry, validate_layouts_config,
     };
     use super::{DashboardConfig, InputExitKey};
@@ -4042,6 +4058,34 @@ mod tests {
             global.merge(project).dashboard.input_exit_key(),
             InputExitKey::Escape
         );
+    }
+
+    #[test]
+    fn dashboard_layout_defaults_to_stacked() {
+        assert_eq!(
+            Config::default().dashboard.layout.unwrap_or_default(),
+            DashboardLayout::Stacked
+        );
+    }
+
+    #[test]
+    fn dashboard_layout_parses_and_merges() {
+        let global: Config = serde_yaml::from_str("dashboard:\n  layout: side_by_side\n").unwrap();
+        assert_eq!(
+            global.clone().merge(Config::default()).dashboard.layout,
+            Some(DashboardLayout::SideBySide)
+        );
+        let project: Config = serde_yaml::from_str("dashboard:\n  layout: stacked\n").unwrap();
+        assert_eq!(
+            global.merge(project).dashboard.layout,
+            Some(DashboardLayout::Stacked)
+        );
+        let project: Config = serde_yaml::from_str("dashboard:\n  layout: side_by_side\n").unwrap();
+        assert_eq!(
+            Config::default().merge(project).dashboard.layout,
+            Some(DashboardLayout::SideBySide)
+        );
+        assert!(serde_yaml::from_str::<Config>("dashboard:\n  layout: sideways\n").is_err());
     }
 
     #[test]

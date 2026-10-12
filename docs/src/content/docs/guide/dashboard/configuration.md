@@ -9,6 +9,7 @@ The dashboard can be customized in your `.workmux.yaml`:
 dashboard:
   commit: "Commit staged changes with a descriptive message"
   merge: "!workmux merge"
+  layout: stacked
   preview_size: 60
   agent_columns:
     [number, project, worktree, git, pr, window, status, time, title]
@@ -21,15 +22,16 @@ The `commit` and `merge` values are text sent to the agent's pane. Use the `!` p
 
 ## Defaults
 
-| Option             | Default value                                               | Description                                       |
-| ------------------ | ----------------------------------------------------------- | ------------------------------------------------- |
-| `commit`           | `Commit staged changes with a descriptive message`          | Natural language prompt                           |
-| `merge`            | `!workmux merge`                                            | Shell command via agent                           |
-| `preview_size`     | `60`                                                        | Preview pane height as percentage (10-90)         |
-| `agent_columns`    | `[number, project, worktree, git, pr, status, time, title]` | Agents table columns, in display order            |
-| `worktree_columns` | `[number, project, worktree, git, pr, mux, age, agent]`     | Worktree table columns, in display order          |
-| `close_on_jump`    | `true`                                                      | Close the dashboard after a jump                  |
-| `input_exit_key`   | `Esc`                                                       | Key to exit input mode (`Esc` or `Ctrl+<letter>`) |
+| Option             | Default value                                               | Description                                                                   |
+| ------------------ | ----------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `commit`           | `Commit staged changes with a descriptive message`          | Natural language prompt                                                       |
+| `merge`            | `!workmux merge`                                            | Shell command via agent                                                       |
+| `layout`           | `stacked`                                                   | `stacked` (table above preview) or `side_by_side` (preview left, table right) |
+| `preview_size`     | `60`                                                        | Preview height or width as percentage (10-90)                                 |
+| `agent_columns`    | `[number, project, worktree, git, pr, status, time, title]` | Agents table columns, in display order                                        |
+| `worktree_columns` | `[number, project, worktree, git, pr, mux, age, agent]`     | Worktree table columns, in display order                                      |
+| `close_on_jump`    | `true`                                                      | Close the dashboard after a jump                                              |
+| `input_exit_key`   | `Esc`                                                       | Key to exit input mode (`Esc` or `Ctrl+<letter>`)                             |
 
 ## Input mode exit key
 
@@ -118,11 +120,24 @@ A trailing `agent`, `pr_title`, or `pr_issues` fills the remaining width. Elsewh
 
 Hiding `number` does not disable `1`-`9` jumps. Hiding `git` does not disable Git status updates or remove the selected worktree's Git details from the preview.
 
+## Layout
+
+The default `stacked` layout places the table above the preview. To give the preview the full content height, with the table on the right:
+
+```yaml
+dashboard:
+  layout: side_by_side
+```
+
+The layout applies to both the Agents and Worktrees tabs. The tab header and footer remain above and below the content. Backends without preview support show only the table regardless of this setting.
+
+Side-by-side leaves less width for each pane. On narrow terminals, use the stacked layout or reduce the table's configured columns. Captured agent output is clipped to the preview width, not rewrapped.
+
 ## Preview size
 
-The `preview_size` option controls the height of the preview pane as a percentage of the terminal height. A higher value means more space for the preview and less for the table.
+The `preview_size` option controls the preview as a percentage of the content area: height in `stacked` layout, width in `side_by_side` layout. A higher value means more space for the preview and less for the table.
 
-You can also adjust the preview size interactively with `+`/`-` keys. These adjustments persist across dashboard sessions via tmux variables.
+You can also adjust the preview size interactively with `+`/`-` keys. These adjustments persist across dashboard sessions in the workmux state directory.
 
 The CLI flag `--preview-size` (`-P`) overrides both the config and saved preference for that session.
 
