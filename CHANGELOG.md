@@ -21,6 +21,12 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
 <!-- skipped: v0.1.25 -->
 <!-- skipped: v0.1.8 -->
 
+## v0.1.274 (2026-10-12)
+
+- Add status tracking for OpenCode V2's terminal UI; run `workmux setup` to install the integration. ([#306](https://github.com/raine/workmux/pull/306))
+- Set `dashboard.layout: side_by_side` to place the preview on the left and the table on the right, giving the preview the full dashboard content height. ([#323](https://github.com/raine/workmux/issues/323))
+- Choose a Ctrl-letter key to leave dashboard input mode with `dashboard.input_exit_key`, allowing Escape to be sent to the agent instead. Escape remains the default exit key. ([#322](https://github.com/raine/workmux/issues/322))
+
 ## v0.1.273 (2026-10-11)
 
 - Fix missing pull request details and check status in the dashboard for bare repository worktrees. ([#321](https://github.com/raine/workmux/issues/321))
