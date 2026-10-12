@@ -1725,6 +1725,22 @@ fn reload_daemon_config(config: &Mutex<Config>) {
     }
 }
 
+struct ConfigWatchPaths {
+    directories: HashSet<PathBuf>,
+    #[cfg(test)]
+    reconciled: Option<mpsc::Sender<()>>,
+}
+
+impl From<HashSet<PathBuf>> for ConfigWatchPaths {
+    fn from(directories: HashSet<PathBuf>) -> Self {
+        Self {
+            directories,
+            #[cfg(test)]
+            reconciled: None,
+        }
+    }
+}
+
 /// Spawn a thread that watches the global config file and per-project
 /// `.workmux.yaml` files and bumps `config_version` whenever a reload succeeds.
 ///
@@ -1736,8 +1752,8 @@ fn spawn_config_watcher(
     config_version: Arc<AtomicU64>,
     dirty_flag: Arc<AtomicBool>,
     wake_tx: mpsc::SyncSender<()>,
-) -> mpsc::Sender<HashSet<PathBuf>> {
-    let (paths_tx, paths_rx) = mpsc::channel::<HashSet<PathBuf>>();
+) -> mpsc::Sender<ConfigWatchPaths> {
+    let (paths_tx, paths_rx) = mpsc::channel::<ConfigWatchPaths>();
     thread::spawn(move || {
         // Bounded fs event channel; on overflow force a reload.
         let (fs_tx, fs_rx) = mpsc::sync_channel::<notify::Result<notify::Event>>(64);
@@ -1798,7 +1814,8 @@ fn spawn_config_watcher(
 
         while !term.load(Ordering::Relaxed) {
             // 1. Reconcile per-project watches from incoming path sets.
-            while let Ok(new_dirs) = paths_rx.try_recv() {
+            while let Ok(request) = paths_rx.try_recv() {
+                let new_dirs = request.directories;
                 // A watch belongs to a directory inode, not merely its pathname.
                 use std::os::unix::fs::MetadataExt;
                 let identities: HashMap<_, _> = new_dirs
@@ -1867,6 +1884,10 @@ fn spawn_config_watcher(
                             );
                         }
                     }
+                }
+                #[cfg(test)]
+                if let Some(reconciled) = request.reconciled {
+                    let _ = reconciled.send(());
                 }
             }
 
@@ -2351,7 +2372,7 @@ pub fn run() -> Result<()> {
                 }
             }
             if resolution.reconciled || resolution.directories != last_config_dirs {
-                let _ = config_paths_tx.send(resolution.directories.clone());
+                let _ = config_paths_tx.send(resolution.directories.clone().into());
                 last_config_dirs = resolution.directories;
             }
             let (
@@ -2770,13 +2791,22 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             wake_tx,
         );
+        let reconcile = |directories| {
+            let (tx, rx) = mpsc::channel();
+            paths_tx
+                .send(ConfigWatchPaths {
+                    directories,
+                    reconciled: Some(tx),
+                })
+                .unwrap();
+            rx.recv_timeout(Duration::from_secs(10))
+                .expect("config watch reconciliation did not finish");
+        };
         let desired = HashSet::from([dir.clone(), global_dir]);
-        paths_tx.send(desired.clone()).unwrap();
-        // Allow the missing-directory registration attempt to fail.
-        thread::sleep(Duration::from_millis(700));
+        // Complete the missing-directory registration attempt before creating it.
+        reconcile(desired.clone());
         std::fs::create_dir(&dir).unwrap();
-        paths_tx.send(desired.clone()).unwrap();
-        thread::sleep(Duration::from_millis(700));
+        reconcile(desired.clone());
         let config_path = dir.join(".workmux.yaml");
         std::fs::write(&config_path, "agent: first").unwrap();
         wake_rx.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -2788,16 +2818,14 @@ mod tests {
         wake_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         std::fs::rename(&dir, temp.path().join("old-project")).unwrap();
         std::fs::create_dir(&dir).unwrap();
-        paths_tx.send(desired).unwrap();
-        thread::sleep(Duration::from_millis(700));
+        reconcile(desired);
         while wake_rx.try_recv().is_ok() {}
         let before = version.load(Ordering::Relaxed);
         std::fs::write(&config_path, "agent: after-directory-replacement").unwrap();
         wake_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(version.load(Ordering::Relaxed) > before);
         // Removing project membership must not remove the shared global watch.
-        paths_tx.send(HashSet::from([dir])).unwrap();
-        thread::sleep(Duration::from_millis(700));
+        reconcile(HashSet::from([dir]));
         while wake_rx.try_recv().is_ok() {}
         let before = version.load(Ordering::Relaxed);
         std::fs::write(global, "agent: global-reload").unwrap();
