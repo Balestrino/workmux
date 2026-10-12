@@ -504,7 +504,11 @@ fn dashboard_footer_target(app: &App, column: u16) -> MouseTarget {
             );
         }
         DashboardTab::Agents if app.input_mode => {
-            return input_footer_target(app.terminal_area.x, column);
+            return input_footer_target(
+                app.terminal_area.x,
+                column,
+                &app.config.dashboard.input_exit_key().to_string(),
+            );
         }
         DashboardTab::Worktrees if app.worktree_filter_active => {
             return filter_footer_target(
@@ -535,9 +539,11 @@ fn filter_footer_target(start: u16, column: u16, filter_width: usize) -> MouseTa
     }
 }
 
-fn input_footer_target(start: u16, column: u16) -> MouseTarget {
+fn input_footer_target(start: u16, column: u16, exit_key: &str) -> MouseTarget {
     const EXIT_START: u16 = 43;
-    if (start + EXIT_START..start + EXIT_START + 8).contains(&column) {
+    if (start + EXIT_START..start + EXIT_START + UnicodeWidthStr::width(exit_key) as u16 + 5)
+        .contains(&column)
+    {
         MouseTarget::Action(Action::ExitInputMode)
     } else {
         MouseTarget::None
@@ -854,6 +860,26 @@ mod tests {
             footer_target_at(2, 22, &items),
             MouseTarget::Action(Action::Quit)
         );
+    }
+
+    #[test]
+    fn input_footer_exit_target_tracks_key_label_width() {
+        for label in ["Esc", "Ctrl+q"] {
+            let start = 10;
+            let first = start + 43;
+            let end = first + UnicodeWidthStr::width(label) as u16 + 5;
+            assert_eq!(
+                input_footer_target(start, first - 1, label),
+                MouseTarget::None
+            );
+            for column in first..end {
+                assert_eq!(
+                    input_footer_target(start, column, label),
+                    MouseTarget::Action(Action::ExitInputMode)
+                );
+            }
+            assert_eq!(input_footer_target(start, end, label), MouseTarget::None);
+        }
     }
 
     #[test]

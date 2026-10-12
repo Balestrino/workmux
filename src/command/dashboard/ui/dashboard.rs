@@ -706,7 +706,10 @@ fn render_footer_input<'a>(app: &'a App) -> Paragraph<'a> {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" \u{2014} type to send keys to agent  "),
-        Span::styled("Esc", Style::default().fg(app.palette.keycap)),
+        Span::styled(
+            app.config.dashboard.input_exit_key().to_string(),
+            Style::default().fg(app.palette.keycap),
+        ),
         Span::raw(" exit"),
     ]))
 }

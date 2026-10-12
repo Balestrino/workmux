@@ -14,20 +14,35 @@ dashboard:
     [number, project, worktree, git, pr, window, status, time, title]
   worktree_columns: [number, project, worktree, git, pr, mux, age, agent]
   close_on_jump: true
+  input_exit_key: Esc
 ```
 
 The `commit` and `merge` values are text sent to the agent's pane. Use the `!` prefix to run shell commands (supported by Claude, Gemini, and other agents).
 
 ## Defaults
 
-| Option             | Default value                                               | Description                               |
-| ------------------ | ----------------------------------------------------------- | ----------------------------------------- |
-| `commit`           | `Commit staged changes with a descriptive message`          | Natural language prompt                   |
-| `merge`            | `!workmux merge`                                            | Shell command via agent                   |
-| `preview_size`     | `60`                                                        | Preview pane height as percentage (10-90) |
-| `agent_columns`    | `[number, project, worktree, git, pr, status, time, title]` | Agents table columns, in display order    |
-| `worktree_columns` | `[number, project, worktree, git, pr, mux, age, agent]`     | Worktree table columns, in display order  |
-| `close_on_jump`    | `true`                                                      | Close the dashboard after a jump          |
+| Option             | Default value                                               | Description                                       |
+| ------------------ | ----------------------------------------------------------- | ------------------------------------------------- |
+| `commit`           | `Commit staged changes with a descriptive message`          | Natural language prompt                           |
+| `merge`            | `!workmux merge`                                            | Shell command via agent                           |
+| `preview_size`     | `60`                                                        | Preview pane height as percentage (10-90)         |
+| `agent_columns`    | `[number, project, worktree, git, pr, status, time, title]` | Agents table columns, in display order            |
+| `worktree_columns` | `[number, project, worktree, git, pr, mux, age, agent]`     | Worktree table columns, in display order          |
+| `close_on_jump`    | `true`                                                      | Close the dashboard after a jump                  |
+| `input_exit_key`   | `Esc`                                                       | Key to exit input mode (`Esc` or `Ctrl+<letter>`) |
+
+## Input mode exit key
+
+`input_exit_key` accepts `Esc` (the default) or `Ctrl+<letter>` (`a`–`z`), case-insensitively. For example, to exit input mode with `Ctrl+q` and send `Esc` to the agent:
+
+```yaml
+dashboard:
+  input_exit_key: Ctrl+q
+```
+
+The exit key is consumed by the dashboard, not sent to the agent. Escape bindings in other dashboard modes are unchanged. Project configuration overrides the global setting.
+
+Choose a key your terminal delivers distinctly. Some Ctrl-letter keys are indistinguishable from Tab, Enter, or Backspace, and terminal flow control can intercept `Ctrl+q` or `Ctrl+s`.
 
 ## Staying open after a jump
 

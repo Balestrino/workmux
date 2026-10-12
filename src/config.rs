@@ -199,9 +199,54 @@ pub struct AutoNameConfig {
     pub background: Option<bool>,
 }
 
+/// Key reserved for leaving dashboard input mode.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum InputExitKey {
+    #[default]
+    Escape,
+    Ctrl(char),
+}
+
+impl TryFrom<String> for InputExitKey {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let value = value.to_ascii_lowercase();
+        if value == "esc" {
+            return Ok(Self::Escape);
+        }
+        if let Some(letter) = value.strip_prefix("ctrl+")
+            && letter.len() == 1
+            && letter.as_bytes()[0].is_ascii_lowercase()
+        {
+            return Ok(Self::Ctrl(letter.as_bytes()[0] as char));
+        }
+        Err("input_exit_key must be Esc or Ctrl+<letter> (a-z)".into())
+    }
+}
+
+impl From<InputExitKey> for String {
+    fn from(key: InputExitKey) -> Self {
+        match key {
+            InputExitKey::Escape => "Esc".into(),
+            InputExitKey::Ctrl(letter) => format!("Ctrl+{letter}"),
+        }
+    }
+}
+
+impl fmt::Display for InputExitKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&String::from(*self))
+    }
+}
+
 /// Configuration for dashboard actions (commit, merge keybindings)
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct DashboardConfig {
+    /// Key that exits input mode. Default: Esc.
+    pub input_exit_key: Option<InputExitKey>,
+
     /// Text to send to agent for commit action (c key).
     /// Default: "Commit staged changes with a descriptive message"
     pub commit: Option<String>,
@@ -324,6 +369,10 @@ fn columns_or_default<T: Copy + PartialEq>(configured: Option<&[T]>, defaults: &
 }
 
 impl DashboardConfig {
+    pub fn input_exit_key(&self) -> InputExitKey {
+        self.input_exit_key.unwrap_or_default()
+    }
+
     pub fn commit(&self) -> &str {
         self.commit
             .as_deref()
@@ -3126,6 +3175,10 @@ impl Config {
 
         // Dashboard actions: per-field override
         merged.dashboard = DashboardConfig {
+            input_exit_key: project
+                .dashboard
+                .input_exit_key
+                .or(self.dashboard.input_exit_key),
             commit: project.dashboard.commit.or(self.dashboard.commit),
             merge: project.dashboard.merge.or(self.dashboard.merge),
             preview_size: project
@@ -3682,6 +3735,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 #   worktree_columns: [number, project, worktree, git, pr, mux, age, agent]
 #   sort_mode: priority
 #   close_on_jump: true
+#   input_exit_key: Esc # Esc or Ctrl+<letter> (a-z)
 
 #-------------------------------------------------------------------------------
 # Sidebar
@@ -3883,6 +3937,7 @@ mod tests {
         WindowPlacement, WorktreeColumn, is_agent_command, validate_domain,
         validate_group_add_entry, validate_layouts_config,
     };
+    use super::{DashboardConfig, InputExitKey};
     use crate::test_support;
     use tempfile::TempDir;
 
@@ -3931,6 +3986,61 @@ mod tests {
         assert_eq!(
             global.merge(Config::default()).default_session(),
             Some("global-main")
+        );
+    }
+
+    #[test]
+    fn dashboard_input_exit_key_defaults_to_escape() {
+        assert_eq!(
+            Config::default().dashboard.input_exit_key(),
+            InputExitKey::Escape
+        );
+    }
+
+    #[test]
+    fn dashboard_input_exit_key_parses_and_round_trips() {
+        for (value, expected) in [
+            ("Esc", InputExitKey::Escape),
+            ("esc", InputExitKey::Escape),
+            ("Ctrl+q", InputExitKey::Ctrl('q')),
+            ("CTRL+Z", InputExitKey::Ctrl('z')),
+        ] {
+            let config: Config =
+                serde_yaml::from_str(&format!("dashboard:\n  input_exit_key: {value}\n")).unwrap();
+            assert_eq!(config.dashboard.input_exit_key(), expected);
+            let serialized = serde_yaml::to_string(&config.dashboard).unwrap();
+            let round_trip: DashboardConfig = serde_yaml::from_str(&serialized).unwrap();
+            assert_eq!(round_trip.input_exit_key(), expected);
+        }
+    }
+
+    #[test]
+    fn dashboard_input_exit_key_rejects_invalid_values() {
+        for value in ["", "q", "Ctrl+", "Ctrl+qq", "Ctrl+1", "Alt+q", "Ctrl+é"] {
+            let error = serde_yaml::from_str::<Config>(&format!(
+                "dashboard:\n  input_exit_key: '{value}'\n"
+            ))
+            .unwrap_err();
+            assert!(error.to_string().contains("input_exit_key must be"));
+        }
+    }
+
+    #[test]
+    fn dashboard_input_exit_key_inherits_and_overrides_global() {
+        let global: Config =
+            serde_yaml::from_str("dashboard:\n  input_exit_key: Ctrl+q\n").unwrap();
+        assert_eq!(
+            global
+                .clone()
+                .merge(Config::default())
+                .dashboard
+                .input_exit_key(),
+            InputExitKey::Ctrl('q')
+        );
+        let project: Config = serde_yaml::from_str("dashboard:\n  input_exit_key: Esc\n").unwrap();
+        assert_eq!(
+            global.merge(project).dashboard.input_exit_key(),
+            InputExitKey::Escape
         );
     }
 

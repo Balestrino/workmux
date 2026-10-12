@@ -600,12 +600,13 @@ fn handle_terminal_event(
     if ctx == Context::DiffNormal
         && let ViewMode::Diff(ref diff) = app.view_mode
         && diff.is_branch_diff
-        && let Some(actions::Action::EnterPatchMode) = action_for_key(ctx, key)
+        && let Some(actions::Action::EnterPatchMode) =
+            action_for_key(ctx, key, app.config.dashboard.input_exit_key())
     {
         return;
     }
 
-    if let Some(action) = action_for_key(ctx, key) {
+    if let Some(action) = action_for_key(ctx, key, app.config.dashboard.input_exit_key()) {
         let refreshed_preview = apply_action(app, action);
         if refreshed_preview {
             *last_preview_refresh = std::time::Instant::now();
