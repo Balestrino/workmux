@@ -21,6 +21,10 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
 <!-- skipped: v0.1.25 -->
 <!-- skipped: v0.1.8 -->
 
+## v0.1.275 (2026-10-13)
+
+- Fix missing latest user prompts for OpenCode V2 in the dashboard and sidebar, including follow-up prompts sent while the agent is working.
+
 ## v0.1.274 (2026-10-12)
 
 - Add status tracking for OpenCode V2's terminal UI; run `workmux setup` to install the integration. ([#306](https://github.com/raine/workmux/pull/306))
