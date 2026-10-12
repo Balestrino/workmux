@@ -2180,17 +2180,9 @@ limitations in the Copilot CLI hooks implementation.
 `~/.gemini/config/hooks.json`. `PreInvocation` marks the pane working, and the
 terminal `Stop` event marks it done.
 
-**OpenCode**: download the workmux status plugin:
-
-```bash
-mkdir -p ~/.config/opencode/plugins
-curl -o ~/.config/opencode/package.json \
-  https://raw.githubusercontent.com/raine/workmux/main/resources/opencode/package.json
-curl -o ~/.config/opencode/plugins/workmux-status.ts \
-  https://raw.githubusercontent.com/raine/workmux/main/resources/opencode/plugins/workmux-status.ts
-```
-
-Restart OpenCode for the plugin to take effect.
+**OpenCode**: run `workmux setup --hooks`. For manual installation, see the
+[OpenCode setup guide](https://workmux.raine.dev/guide/status-tracking/#opencode-setup).
+V2 status tracking requires the terminal UI; headless `opencode run` is not tracked.
 
 **Oh My Pi**: copy the workmux status extension to your global OMP extensions directory:
 

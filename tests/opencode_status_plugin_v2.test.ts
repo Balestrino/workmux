@@ -64,7 +64,7 @@ beforeEach(async () => {
   const binary = join(testDir, 'workmux');
   // The real workmux reads stdin to check for hook input. This stub does too:
   // leaving execFile's stdin pipe open prevents it from registering at all.
-  await writeFile(binary, '#!/bin/sh\n/bin/cat >/dev/null\ncase "$WORKMUX_BACKEND" in\n  wezterm) pane="$WEZTERM_PANE";;\n  zellij) pane="$ZELLIJ_PANE_ID";;\n  kitty) pane="$KITTY_WINDOW_ID";;\n  *) pane="${TMUX_PANE:-${WEZTERM_PANE:-${ZELLIJ_PANE_ID:-${KITTY_WINDOW_ID:-}}}}";;\nesac\nprintf "%s|%s\\n" "$pane" "$*" >> "$WORKMUX_TEST_LOG"\n');
+  await writeFile(binary, '#!/bin/sh\n/bin/cat >> "$WORKMUX_TEST_LOG.stdin"\ncase "$WORKMUX_BACKEND" in\n  wezterm) pane="$WEZTERM_PANE";;\n  zellij) pane="$ZELLIJ_PANE_ID";;\n  kitty) pane="$KITTY_WINDOW_ID";;\n  *) pane="${TMUX_PANE:-${WEZTERM_PANE:-${ZELLIJ_PANE_ID:-${KITTY_WINDOW_ID:-}}}}";;\nesac\nprintf "%s|%s\\n" "$pane" "$*" >> "$WORKMUX_TEST_LOG"\n');
   await chmod(binary, 0o755);
   process.env.PATH = `${testDir}:${originalPath}`;
   process.env.WORKMUX_TEST_LOG = join(testDir, 'calls');
@@ -821,6 +821,96 @@ test('resolves a viewed session ancestry without creating duplicate ownership', 
     await waitForCalls(3);
     expect((await calls()).at(-1)).toBe('%123|set-window-status done');
   } finally {
+    await harness.cleanup();
+  }
+});
+
+async function promptInput() {
+  return readFile(`${process.env.WORKMUX_TEST_LOG}.stdin`, 'utf8').catch(() => '');
+}
+
+function userPrompt(sessionID: string, text: string) {
+  return { sessionID, item: { type: 'user', payload: { text }, delivery: 'steer' } };
+}
+
+test('top-level prompts reach workmux stdin, including another prompt while working', async () => {
+  const harness = await hydrationHarness({ get: () => ({ id: 'ours' }) });
+  try {
+    await waitForCalls(2);
+    harness.emit('session.inbox.enqueued', userPrompt('ours', 'fix the bug\nwith details'));
+    await waitForCalls(3);
+    expect(await promptInput()).toBe(JSON.stringify({ prompt: 'fix the bug\nwith details' }));
+    harness.emit('session.inbox.enqueued', userPrompt('ours', 'also add tests'));
+    await waitForCalls(4);
+    expect(await promptInput()).toBe(JSON.stringify({ prompt: 'fix the bug\nwith details' })
+      + JSON.stringify({ prompt: 'also add tests' }));
+    expect((await calls()).slice(2)).toEqual([
+      '%123|set-window-status working', '%123|set-window-status working',
+    ]);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test('prompts exclude children, synthetic messages, blank text, and unrelated sessions', async () => {
+  const harness = await hydrationHarness({
+    family: ['ours', 'child'],
+    root: (id) => id === 'child' ? 'ours' : id,
+    get: (id) => ({ id, ...(id === 'child' ? { parentID: 'ours' } : {}) }),
+  });
+  try {
+    await waitForCalls(2);
+    harness.emit('session.inbox.enqueued', userPrompt('child', 'delegated prompt'));
+    harness.emit('session.inbox.enqueued', userPrompt('other', 'another pane'));
+    harness.emit('session.inbox.enqueued', userPrompt('ours', ' \n '));
+    harness.emit('session.inbox.enqueued', { sessionID: 'ours', item: { type: 'synthetic', payload: { text: 'internal notification' } } });
+    harness.emit('session.inbox.enqueued', userPrompt('ours', 'real prompt'));
+    await waitForCalls(3);
+    expect(await promptInput()).toBe(JSON.stringify({ prompt: 'real prompt' }));
+    expect(await calls()).toHaveLength(3);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test('a prompt received before execution waits for the working report', async () => {
+  const harness = await hydrationHarness({
+    get: () => ({ id: 'ours' }),
+    client: snapshotClient({ active: async () => ({}) }),
+  });
+  try {
+    await waitForCalls(2);
+    expect((await calls()).at(-1)).toBe('%123|set-window-status done');
+    harness.emit('session.inbox.enqueued', userPrompt('ours', 'new turn'));
+    harness.emit('session.execution.started', { sessionID: 'ours' });
+    await waitForCalls(3);
+    expect(await promptInput()).toBe(JSON.stringify({ prompt: 'new turn' }));
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test('missing metadata is checked before capturing a prompt without letting a child suppress it', async () => {
+  const metadata = deferred();
+  const client = snapshotClient({ active: async () => ({ ours: { type: 'running' } }) });
+  Object.assign(client.session, { get: async ({ sessionID }: { sessionID: string }) => {
+    if (sessionID === 'ours') await metadata.promise;
+    return { id: sessionID, ...(sessionID === 'child' ? { parentID: 'ours' } : {}) };
+  } });
+  const harness = await hydrationHarness({
+    family: ['ours', 'child'],
+    root: () => 'ours',
+    client,
+  });
+  try {
+    await waitForCalls(2);
+    harness.emit('session.inbox.enqueued', userPrompt('ours', 'top-level prompt'));
+    harness.emit('session.inbox.enqueued', userPrompt('child', 'child prompt'));
+    metadata.resolve();
+    await waitForCalls(3);
+    expect(await promptInput()).toBe(JSON.stringify({ prompt: 'top-level prompt' }));
+  } finally {
+    metadata.resolve();
     await harness.cleanup();
   }
 });

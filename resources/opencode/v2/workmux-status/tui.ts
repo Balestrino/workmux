@@ -24,10 +24,14 @@ function isMissingSession(error: unknown, sessionID: string): boolean {
     && 'sessionID' in error && error.sessionID === sessionID;
 }
 
-function workmux(...args: string[]): Promise<boolean> {
+function workmux(args: string[], prompt?: string): Promise<boolean> {
   return new Promise((resolve) => {
-    // Workmux reads stdin for hook metadata. An open pipe makes it wait forever.
-    const child = spawn('workmux', args, { stdio: 'ignore', timeout: 3000 });
+    // Workmux reads hook metadata until EOF; close stdin after sending a prompt.
+    const child = spawn('workmux', args, { stdio: [prompt === undefined ? 'ignore' : 'pipe', 'ignore', 'ignore'], timeout: 3000 });
+    if (child.stdin) {
+      child.stdin.on('error', () => {});
+      child.stdin.end(JSON.stringify({ prompt }));
+    }
     let spawnError: string | undefined;
     child.on('error', (error: NodeJS.ErrnoException) => {
       spawnError = error.code ?? 'spawn error';
@@ -49,7 +53,10 @@ export default Plugin.define({
     let closed = false;
     let desired: WindowStatus | undefined;
     let reported: WindowStatus | undefined;
-    let queue = workmux('register-agent').then(() => {});
+    let queue = workmux(['register-agent']).then(() => {});
+    let pendingPrompt: { text: string; sessionID: string } | undefined;
+    let promptVersion = 0;
+    let capturedPromptVersion = 0;
 
     type OwnedSession = SessionState & { idle?: number | null };
     type Snapshot = { events: SessionEvent[]; inFlight: boolean; retryAt: number };
@@ -66,12 +73,18 @@ export default Plugin.define({
       }
       const status = windowStatus([...families.values()].flatMap((family) => [...family.sessions.values()]));
       if (status === 'done' && (desired === undefined || [...families.values()].some((family) => family.snapshot))) return;
-      if (status === desired && status === reported) return;
+      if (pendingPrompt && !owner(pendingPrompt.sessionID)) pendingPrompt = undefined;
+      if (status === desired && status === reported && !(status === 'working' && pendingPrompt)) return;
       desired = status;
       queue = queue.then(async () => {
-        if (closed || desired === reported || !desired) return;
+        if (closed || !desired) return;
         const next = desired;
-        if (await workmux('set-window-status', next)) reported = next;
+        const prompt = next === 'working' ? pendingPrompt : undefined;
+        if (next === reported && !prompt) return;
+        if (await workmux(['set-window-status', next], prompt?.text)) {
+          reported = next;
+          if (pendingPrompt === prompt) pendingPrompt = undefined;
+        }
       });
     }
 
@@ -81,6 +94,20 @@ export default Plugin.define({
         if (family.sessions.has(sessionID) || (parentID && family.sessions.has(parentID))) return family;
       }
       return families.get(ctx.data.session.root(parentID ?? sessionID));
+    }
+
+    async function capturePrompt(sessionID: string, text: string) {
+      if (!text.trim() || !owner(sessionID)) return;
+      const version = ++promptVersion;
+      try {
+        const info = ctx.data.session.get(sessionID) ?? await ctx.client.session.get({ sessionID });
+        if (closed || version < capturedPromptVersion || info.parentID || !owner(sessionID)) return;
+        capturedPromptVersion = version;
+        pendingPrompt = { text, sessionID };
+        publish();
+      } catch {
+        // An unclassified session may be a subagent; skip its prompt.
+      }
     }
 
     function observe(family: Family, event: SessionEvent) {
@@ -226,6 +253,9 @@ export default Plugin.define({
       captureLocalSession();
       let change: SessionEvent;
       switch (event.type) {
+        case 'session.inbox.enqueued':
+          if (event.data.item.type === 'user') void capturePrompt(event.data.sessionID, event.data.item.payload.text);
+          return;
         case 'session.created':
           change = { type: 'created', sessionID: event.data.sessionID, parentID: event.data.parentID };
           deleted.delete(change.sessionID);
