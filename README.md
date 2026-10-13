@@ -126,6 +126,10 @@ New to worktrees? See [Why git worktrees?](#why-git-worktrees)
 
 ## Installation
 
+**Official sources:** [github.com/raine/workmux](https://github.com/raine/workmux)
+and [workmux.raine.dev](https://workmux.raine.dev/). This project is not affiliated
+with workmux.com.
+
 ### Bash YOLO
 
 ```bash
