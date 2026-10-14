@@ -21,6 +21,10 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
 <!-- skipped: v0.1.25 -->
 <!-- skipped: v0.1.8 -->
 
+## v0.1.276 (2026-10-14)
+
+- Fix sidebar sizing and preserve content pane proportions when opening or closing the sidebar on tmux 3.8. ([#325](https://github.com/raine/workmux/issues/325))
+
 ## v0.1.275 (2026-10-13)
 
 - Fix missing latest user prompts for OpenCode V2 in the dashboard and sidebar, including follow-up prompts sent while the agent is working.
