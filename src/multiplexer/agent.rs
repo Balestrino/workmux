@@ -203,9 +203,7 @@ impl AgentProfile for CodexProfile {
     }
 
     fn auto_name_command(&self) -> Option<&'static str> {
-        Some(
-            r#"codex exec --ephemeral --config model_reasoning_effort="low" -m gpt-5.1-codex-mini"#,
-        )
+        Some(r#"codex exec --ephemeral --config model_reasoning_effort="low" -m gpt-6-luna"#)
     }
 
     fn continue_flag(&self) -> Option<&'static str> {
@@ -739,9 +737,7 @@ mod tests {
         assert_eq!(profile.skip_permissions_flag(), Some("--yolo"));
         assert_eq!(
             profile.auto_name_command(),
-            Some(
-                r#"codex exec --ephemeral --config model_reasoning_effort="low" -m gpt-5.1-codex-mini"#
-            )
+            Some(r#"codex exec --ephemeral --config model_reasoning_effort="low" -m gpt-6-luna"#)
         );
         assert_eq!(profile.continue_flag(), Some("resume --last"));
     }
