@@ -1599,7 +1599,13 @@ impl SidebarApp {
                 let expected = super::effective_width_for(&config, window_w);
                 let delta = (actual_width as i16 - expected as i16).abs();
                 if delta > 0 {
-                    if super::width_exceeds_defensive_max(actual_width) {
+                    if resize_was_applied_by_reflow(actual_width) {
+                        // A reflow raced with a newer synced width. Catch up
+                        // locally without publishing a size the user never chose.
+                        if let Some(wid) = self.host_window_id() {
+                            let _ = super::reflow(Some(wid));
+                        }
+                    } else if super::width_exceeds_defensive_max(actual_width) {
                         if let Some(wid) = self.host_window_id().map(str::to_string) {
                             super::set_sidebar_width(expected);
                             self.suppress_resize_once = true;
@@ -1607,6 +1613,7 @@ impl SidebarApp {
                         }
                     } else if config.sidebar.width.is_none() {
                         super::set_sidebar_width(actual_width);
+                        record_applied_size(actual_width);
                         if let Some(wid) = self.host_window_id() {
                             super::reflow_all_sidebars_except(wid);
                         }
@@ -1635,8 +1642,13 @@ impl SidebarApp {
                 let expected = super::effective_height_for(&config, window_h);
                 let delta = (actual_height as i16 - expected as i16).abs();
                 if delta > 0 {
-                    if config.sidebar.height.is_none() {
+                    if resize_was_applied_by_reflow(actual_height) {
+                        if let Some(wid) = self.host_window_id() {
+                            let _ = super::reflow(Some(wid));
+                        }
+                    } else if config.sidebar.height.is_none() {
                         super::set_sidebar_height(actual_height);
+                        record_applied_size(actual_height);
                         if let Some(wid) = self.host_window_id() {
                             super::reflow_all_sidebars_except(wid);
                         }
@@ -1862,6 +1874,36 @@ fn query_pane_height_for_pane() -> Option<u16> {
 
 fn query_pane_extent_for_pane(format: &str) -> Option<u16> {
     query_tmux_positive_u16_for_current_pane(format)
+}
+
+/// Whether the sidebar's current extent is the one a layout reflow gave it.
+///
+/// Every sidebar sees the resizes that propagate a new size to it. Treating
+/// those as user resizes would make each sidebar publish its own size and
+/// reflow the others, which keeps sidebars resizing each other indefinitely
+/// when their checks overlap.
+fn resize_was_applied_by_reflow(extent: u16) -> bool {
+    let format = format!("#{{{}}}", super::SIDEBAR_APPLIED_SIZE_OPTION);
+    query_tmux_u16_for_current_pane(&format) == Some(extent)
+}
+
+/// Record a user-chosen extent as applied, so a later resize back to the
+/// previous size still counts as a user resize.
+fn record_applied_size(extent: u16) {
+    let pane_id = std::env::var("TMUX_PANE").unwrap_or_default();
+    if pane_id.is_empty() {
+        return;
+    }
+    let _ = Cmd::new("tmux")
+        .args(&[
+            "set-option",
+            "-p",
+            "-t",
+            &pane_id,
+            super::SIDEBAR_APPLIED_SIZE_OPTION,
+            &extent.to_string(),
+        ])
+        .run();
 }
 
 /// Reject agent tokens in a group header template. A header does not

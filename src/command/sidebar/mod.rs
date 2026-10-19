@@ -44,6 +44,9 @@ use self::panes::{
 };
 
 const SIDEBAR_ROLE_VALUE: &str = "sidebar";
+/// Pane option holding the extent the last layout reflow gave a sidebar.
+/// A sidebar resized to this extent was resized by workmux, not by the user.
+const SIDEBAR_APPLIED_SIZE_OPTION: &str = "@workmux_sidebar_applied_size";
 const MIN_WIDTH: u16 = 25;
 const MAX_WIDTH: u16 = 50;
 const MAX_SANE_WIDTH: u16 = 80;
