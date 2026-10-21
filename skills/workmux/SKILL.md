@@ -58,19 +58,12 @@ checkout.
 
 ## Checking agent status
 
-For status requests, minimize tool round trips and output.
+Reuse known sessions, paths, and handles. If handles are unknown, inspect
+the session's coordinator or dashboard first.
 
-- Use known session names, project paths, and agent handles from the
-  conversation before rediscovering them.
-- For workmux-managed agents, use `workmux status` and capture the last
-  40–60 lines from each relevant agent. Batch these in one tool call.
-- If agent handles are unknown, inspect the session's coordinator or
-  dashboard first, then batch worker captures in one follow-up call.
-- Skip idle shell panes and unrelated projects.
-- Report each agent's task, progress, blockers, and completion or commit
-  evidence. Stop once there is enough evidence to answer.
-- Do not poll or verify again unless the result is ambiguous.
-- Read required skills once per conversation and reuse their instructions.
+Batch `workmux status` and `workmux capture <handle> -n 50` for relevant
+agents in one tool call. Skip idle shells and unrelated projects. Report
+task, progress, blockers, and completion evidence; stop when clear.
 
 ## Key Concepts
 
