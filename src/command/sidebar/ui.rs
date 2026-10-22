@@ -453,7 +453,28 @@ pub(crate) fn format_rebase_spans(
 
 /// Render the sidebar UI.
 pub fn render_sidebar(f: &mut Frame, app: &mut SidebarApp) {
-    let area = f.area();
+    let mut area = f.area();
+    if let Some(name) = &app.view_name {
+        let scope = if app.filter_mode == SidebarFilterMode::Session {
+            format!(
+                "[view: {name} + session: {}]",
+                app.host_session().unwrap_or("?")
+            )
+        } else {
+            format!("[view: {name}]")
+        };
+        f.render_widget(
+            footer_line(app, scope),
+            Rect::new(area.x, area.y, area.width, 1),
+        );
+        area.y = area.y.saturating_add(1);
+        area.height = area.height.saturating_sub(1);
+    }
+
+    if area.is_empty() {
+        app.list_area = area;
+        return;
+    }
 
     if app.position == crate::config::SidebarPosition::Top {
         render_horizontal_bar(f, app, area);
@@ -532,6 +553,7 @@ fn help_entries(app: &SidebarApp) -> Vec<(&'static str, &'static str)> {
         ("t", "grouping"),
         ("v", "layout"),
         ("f", "session filter"),
+        ("V", "next view"),
         ("z", "sleep"),
         ("q", "quit"),
     ]);
@@ -1767,7 +1789,11 @@ fn render_no_agents(f: &mut Frame, app: &SidebarApp, area: Rect) {
 fn no_agents_line(app: &SidebarApp) -> Line<'static> {
     if app.has_loaded_snapshot {
         Line::from(Span::styled(
-            "No agents running",
+            if app.view_name.is_some() {
+                "No matching agents"
+            } else {
+                "No agents running"
+            },
             Style::default().fg(app.palette.dimmed),
         ))
     } else {
@@ -2190,6 +2216,25 @@ mod tests {
         assert!(text.contains("sidebar-groups"));
         assert!((0..12).any(|y| app.hit_test(1, y) == Some(5)));
         assert_eq!(app.hit_test(1, 11), None);
+    }
+
+    #[test]
+    fn named_scope_is_visible_in_both_layouts_even_when_empty() {
+        for position in [
+            crate::config::SidebarPosition::Left,
+            crate::config::SidebarPosition::Top,
+        ] {
+            let mut app = tile_app();
+            app.position = position;
+            app.view_name = Some("Empty".into());
+            app.agents.clear();
+            app.has_loaded_snapshot = true;
+            app.rebuild_rows();
+            let lines = rendered(&mut app, 36, 5);
+            assert!(lines[0].contains("[view: Empty]"));
+            assert!(lines.iter().any(|line| line.contains("No matching agents")));
+            assert!(rendered(&mut app, 36, 1)[0].contains("[view: Empty]"));
+        }
     }
 
     #[test]

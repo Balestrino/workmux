@@ -51,6 +51,7 @@ struct TmuxState {
     position: Option<String>,
     layout: Option<String>,
     filter: Option<String>,
+    view: Option<String>,
     sleeping_panes: Option<String>,
     group_by: Option<String>,
     expanded_groups: Option<String>,
@@ -71,6 +72,7 @@ fn query_tmux_state(tmux: &TmuxBackend) -> Result<TmuxState> {
         position: snapshot.position,
         layout: snapshot.layout,
         filter: snapshot.filter,
+        view: snapshot.view,
         sleeping_panes: snapshot.sleeping_panes,
         group_by: snapshot.group_by,
         expanded_groups: snapshot.expanded_groups,
@@ -108,6 +110,7 @@ fn snapshots_equal(
         position: _,
         layout_mode: _,
         filter_mode: _,
+        view_name: _,
         active_windows: _,
         active_pane_ids: _,
         window_pane_counts: _,
@@ -128,6 +131,7 @@ fn snapshots_equal(
     left.position == right.position
         && left.layout_mode == right.layout_mode
         && left.filter_mode == right.filter_mode
+        && left.view_name == right.view_name
         && left.active_windows == right.active_windows
         && left.active_pane_ids == right.active_pane_ids
         && left.window_pane_counts == right.window_pane_counts
@@ -2222,6 +2226,7 @@ pub fn run() -> Result<()> {
     let instance_id = mux.instance_id();
     let tmux = TmuxBackend::for_socket(&instance_id);
     let config = Arc::new(Mutex::new(Config::load(None)?));
+    let mut view_projects = super::view::ProjectCache::default();
     // Captured at startup and intentionally not live-reloaded. tmux's
     // @workmux_pane_status holds the icon string itself; build_snapshot
     // compares pane statuses to these exact strings to suppress stale
@@ -2435,6 +2440,24 @@ pub fn run() -> Result<()> {
             }
             last_interrupted = output.next_interrupted;
             output.snapshot.config_version = config_version.load(Ordering::Relaxed);
+            {
+                let cfg = config.lock().unwrap();
+                let views = cfg.sidebar.views.as_deref().unwrap_or_default();
+                output.snapshot.view_name = if views.is_empty() {
+                    None
+                } else {
+                    Some(
+                        super::view::selected(views, tmux_state.view.as_deref())
+                            .map_or("All", |view| view.name.as_str())
+                            .to_string(),
+                    )
+                };
+                view_projects.retain(
+                    &mut output.snapshot.agents,
+                    views,
+                    tmux_state.view.as_deref(),
+                );
+            }
             server.broadcast(&output.snapshot);
 
             let stale_threshold = output.snapshot.stale_threshold_secs;
@@ -3307,6 +3330,7 @@ mod tests {
 
     fn empty_snapshot() -> super::super::snapshot::SidebarSnapshot {
         super::super::snapshot::SidebarSnapshot {
+            view_name: None,
             position: SidebarPosition::Left,
             layout_mode: SidebarLayoutMode::Tiles,
             filter_mode: SidebarFilterMode::None,
@@ -4753,6 +4777,7 @@ mod tests {
                         position: None,
                         layout: None,
                         filter: None,
+                        view: None,
                         sleeping_panes: None,
                         group_by: None,
                         expanded_groups: None,

@@ -326,3 +326,12 @@ sidebar:
       - "{secondary} {fill} {git_stats}"
       - "{pane_title} {fill} {pr_number} {pr_checks}"
 ```
+
+## Named views
+
+Use global `sidebar.views` to define named scopes by exact tmux session names or
+project directories, with an optional Other view for unmatched agents. Press `V`
+to cycle scopes without changing row grouping or the `f` session filter.
+
+See [Named views](/reference/commands/sidebar/#named-views) for configuration,
+matching rules, CLI selection, and a tmux popup chooser.

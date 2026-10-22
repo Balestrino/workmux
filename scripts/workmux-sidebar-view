@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+choices="$(workmux sidebar view --list)"
+views=()
+while IFS= read -r name; do
+    views+=("$name")
+done <<< "$choices"
+
+PS3='View number (Ctrl-D to cancel): '
+select view in "${views[@]}"; do
+    if [[ -n "$view" ]]; then
+        workmux sidebar view -- "$view"
+        break
+    fi
+done

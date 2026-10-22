@@ -376,6 +376,7 @@ pub struct SidebarApp {
     suppress_resize_once: bool,
     /// Filter mode: show all agents or only those in the host tmux session.
     pub filter_mode: SidebarFilterMode,
+    pub view_name: Option<String>,
 }
 
 fn detect_terminal_theme_mode() -> ThemeMode {
@@ -454,6 +455,7 @@ impl SidebarApp {
             pending_resize_rows: None,
             resize_deadline: None,
             suppress_resize_once: false,
+            view_name: None,
             filter_mode: SidebarFilterMode::default(),
         }
     }
@@ -545,6 +547,7 @@ impl SidebarApp {
             pending_resize_rows: None,
             resize_deadline: None,
             suppress_resize_once: false,
+            view_name: None,
             filter_mode: SidebarFilterMode::default(),
         })
     }
@@ -570,6 +573,7 @@ impl SidebarApp {
         self.position = snapshot.position;
         self.layout_mode = snapshot.layout_mode;
         self.filter_mode = snapshot.filter_mode;
+        self.view_name = snapshot.view_name;
         self.git_statuses = snapshot.git_statuses;
         self.pr_statuses = snapshot.pr_statuses;
         self.check_statuses = snapshot.check_statuses;
@@ -2329,6 +2333,7 @@ mod tests {
         SidebarSnapshot {
             position: SidebarPosition::Left,
             layout_mode: SidebarLayoutMode::Tiles,
+            view_name: None,
             filter_mode: SidebarFilterMode::None,
             group_by: None,
             expanded_groups: Vec::new(),
@@ -2578,6 +2583,7 @@ mod grouping_tests {
             stale_threshold_secs: super::super::snapshot::STALE_THRESHOLD_SECS,
             position: SidebarPosition::Left,
             layout_mode: SidebarLayoutMode::Tiles,
+            view_name: None,
             filter_mode: SidebarFilterMode::None,
             group_by,
             expanded_groups: Vec::new(),
@@ -2644,6 +2650,31 @@ mod grouping_tests {
                 SidebarRow::Agent(2),
             ]
         );
+    }
+
+    #[test]
+    fn named_view_intersects_session_filter_and_can_be_empty() {
+        let mut app = app();
+        app.host_identity = Some(HostIdentity {
+            session_name: "alpha".into(),
+            session_id: "$1".into(),
+            window_id: "@1".into(),
+            pane_id: "%sidebar".into(),
+        });
+        let mut snap = snapshot(Some(SidebarGroupBy::Project), grouped_agents());
+        let views = vec![crate::config::SidebarView {
+            name: "Beta".into(),
+            sessions: vec!["beta".into()],
+            ..Default::default()
+        }];
+        super::super::view::ProjectCache::default().retain(&mut snap.agents, &views, Some("Beta"));
+        snap.view_name = Some("Beta".into());
+        snap.filter_mode = SidebarFilterMode::Session;
+        app.apply_snapshot(snap);
+        assert_eq!(app.view_name.as_deref(), Some("Beta"));
+        assert!(app.agents.is_empty());
+        assert!(app.rows.is_empty());
+        assert_eq!(app.selected_agent_idx(), None);
     }
 
     #[test]

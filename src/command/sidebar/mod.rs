@@ -29,6 +29,7 @@ mod runtime;
 mod snapshot;
 mod template;
 mod ui;
+pub(crate) mod view;
 
 use crate::cmd::Cmd;
 use crate::config::{SidebarHeight, SidebarPosition, SidebarWidth};
