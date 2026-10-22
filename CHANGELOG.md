@@ -23,6 +23,7 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
 
 ## Unreleased
 
+- Fork Pi conversations into new worktrees with `workmux add --fork`. ([#337](https://github.com/raine/workmux/issues/337))
 - Show which project each agent belongs to in `workmux status --all`, plus its tmux session when the session name differs from the project.
 
 ## v0.1.276 (2026-10-14)
