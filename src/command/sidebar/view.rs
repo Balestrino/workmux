@@ -1,6 +1,6 @@
-//! Named scopes shared by the sidebar and its CLI chooser.
+//! Per-window sidebar views and their command-line controls.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -8,9 +8,39 @@ use anyhow::{Result, bail};
 
 use crate::cmd::Cmd;
 use crate::config::{Config, SidebarView};
-use crate::multiplexer::AgentPane;
+use crate::multiplexer::{AgentPane, LivePaneInfo};
+use serde::{Deserialize, Serialize};
 
-pub const OPTION: &str = "@workmux_sidebar_view";
+pub const OPTION: &str = "@workmux_sidebar_window_view";
+pub const SCOPE_OPTION: &str = "@workmux_sidebar_scope";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowView {
+    pub name: String,
+    pub pane_ids: HashSet<String>,
+}
+
+pub fn current_window() -> Result<String> {
+    let pane = std::env::var("TMUX_PANE").ok();
+    let mut args = vec!["display-message", "-p"];
+    if let Some(pane) = pane.as_deref() {
+        args.extend(["-t", pane]);
+    }
+    args.push("#{window_id}");
+    Ok(Cmd::new("tmux")
+        .args(&args)
+        .run_and_capture_stdout()?
+        .trim()
+        .to_string())
+}
+
+pub fn read_scope(window: &str) -> Option<WindowView> {
+    let value = Cmd::new("tmux")
+        .args(&["show-option", "-wqv", "-t", window, SCOPE_OPTION])
+        .run_and_capture_stdout()
+        .ok()?;
+    serde_json::from_str(&value).ok()
+}
 
 pub fn selected<'a>(views: &'a [SidebarView], name: Option<&str>) -> Option<&'a SidebarView> {
     views.iter().find(|view| Some(view.name.as_str()) == name)
@@ -27,7 +57,7 @@ fn next_name<'a>(views: &'a [SidebarView], current: Option<&str>) -> &'a str {
     .map_or("All", |view| view.name.as_str())
 }
 
-pub fn select(name: Option<&str>, list: bool) -> Result<()> {
+pub fn select(name: Option<&str>, list: bool, clear: bool) -> Result<()> {
     let config = Config::load(None)?;
     let views = config.sidebar.views.as_deref().unwrap_or_default();
     if list {
@@ -37,18 +67,39 @@ pub fn select(name: Option<&str>, list: bool) -> Result<()> {
         }
         return Ok(());
     }
-    let current = Cmd::new("tmux")
-        .args(&["show-option", "-gqv", OPTION])
-        .run_and_capture_stdout()?;
-    let name = name.unwrap_or_else(|| next_name(views, Some(current.trim())));
-    if name != "All" && selected(views, Some(name)).is_none() {
-        bail!("unknown sidebar view {name:?}; use workmux sidebar view --list");
+    let window = current_window()?;
+    if clear {
+        Cmd::new("tmux")
+            .args(&["set-option", "-wu", "-t", &window, OPTION])
+            .run()?;
+    } else {
+        let scope = read_scope(&window);
+        let current = Cmd::new("tmux")
+            .args(&["show-option", "-wqv", "-t", &window, OPTION])
+            .run_and_capture_stdout()?;
+        let current = if current.trim().is_empty() {
+            scope.as_ref().map_or("All", |scope| scope.name.as_str())
+        } else {
+            current.trim()
+        };
+        let name = name.unwrap_or_else(|| next_name(views, Some(current)));
+        if name != "All" && selected(views, Some(name)).is_none() {
+            bail!("unknown sidebar view {name:?}; use workmux sidebar view --list");
+        }
+        Cmd::new("tmux")
+            .args(&["set-option", "-w", "-t", &window, OPTION, name])
+            .run()?;
     }
-    Cmd::new("tmux")
-        .args(&["set-option", "-g", OPTION, name])
-        .run()?;
     super::signal_daemon();
     Ok(())
+}
+
+fn automatic_name<'a>(views: &'a [SidebarView], session: &str, project: &Path) -> &'a str {
+    views
+        .iter()
+        .find(|view| !view.other && matches(view, session, project))
+        .or_else(|| views.iter().find(|view| view.other))
+        .map_or("All", |view| view.name.as_str())
 }
 
 /// Normalize nonexistent paths lexically too, without confusing sibling names.
@@ -90,40 +141,119 @@ fn includes(views: &[SidebarView], view: &SidebarView, session: &str, project: &
 
 /// Cache Git discovery across ticks; refresh so moved repositories recover.
 #[derive(Default)]
-pub struct ProjectCache(HashMap<PathBuf, (Instant, PathBuf)>);
+pub struct ProjectCache {
+    projects: HashMap<PathBuf, (Instant, PathBuf)>,
+    /// Keep the last active agent when focus moves into its sidebar.
+    hosts: HashMap<String, String>,
+}
 
 impl ProjectCache {
-    pub fn retain(
+    fn root(&mut self, path: &Path) -> PathBuf {
+        let entry = self
+            .projects
+            .entry(path.to_path_buf())
+            .or_insert_with(|| (Instant::now(), project_root(path)));
+        if entry.0.elapsed() > Duration::from_secs(30) {
+            *entry = (Instant::now(), project_root(path));
+        }
+        entry.1.clone()
+    }
+
+    pub fn window_views(
         &mut self,
-        agents: &mut Vec<AgentPane>,
         views: &[SidebarView],
-        name: Option<&str>,
-    ) {
-        let Some(view) = selected(views, name) else {
-            return;
-        };
-        self.0
-            .retain(|path, _| agents.iter().any(|agent| &agent.path == path));
-        let needs_paths = if view.other {
-            views.iter().any(|v| !v.project_dirs.is_empty())
-        } else {
-            !view.project_dirs.is_empty()
-        };
-        agents.retain(|agent| {
-            let project = if needs_paths {
-                let entry = self
-                    .0
-                    .entry(agent.path.clone())
-                    .or_insert_with(|| (Instant::now(), project_root(&agent.path)));
-                if entry.0.elapsed() > Duration::from_secs(30) {
-                    *entry = (Instant::now(), project_root(&agent.path));
-                }
-                entry.1.as_path()
-            } else {
-                agent.path.as_path()
-            };
-            includes(views, view, &agent.session, project)
+        agents: &[AgentPane],
+        panes: &HashMap<String, LivePaneInfo>,
+        active: &HashSet<String>,
+        overrides: &HashMap<String, String>,
+    ) -> HashMap<String, WindowView> {
+        if views.is_empty() {
+            self.projects.clear();
+            self.hosts.clear();
+            return HashMap::new();
+        }
+        self.projects.retain(|path, _| {
+            agents.iter().any(|a| &a.path == path) || panes.values().any(|p| &p.working_dir == path)
         });
+        let needs_paths = views.iter().any(|v| !v.project_dirs.is_empty());
+        let projects: HashMap<_, _> = agents
+            .iter()
+            .map(|agent| {
+                let root = if needs_paths {
+                    self.root(&agent.path)
+                } else {
+                    agent.path.clone()
+                };
+                (agent.pane_id.as_str(), root)
+            })
+            .collect();
+        let memberships: HashMap<_, _> = views
+            .iter()
+            .map(|view| {
+                let ids: HashSet<String> = agents
+                    .iter()
+                    .filter(|a| includes(views, view, &a.session, &projects[a.pane_id.as_str()]))
+                    .map(|a| a.pane_id.clone())
+                    .collect();
+                (view.name.as_str(), ids)
+            })
+            .collect();
+        let mut windows: HashMap<&str, Vec<(&String, &LivePaneInfo)>> = HashMap::new();
+        for (id, pane) in panes {
+            if let Some(window) = pane.window_id.as_deref() {
+                windows.entry(window).or_default().push((id, pane));
+            }
+        }
+        self.hosts
+            .retain(|window, _| windows.contains_key(window.as_str()));
+        windows
+            .into_iter()
+            .map(|(window, mut window_panes)| {
+                window_panes.sort_by_key(|(id, _)| {
+                    id.trim_start_matches('%')
+                        .parse::<u64>()
+                        .unwrap_or(u64::MAX)
+                });
+                let previous = self.hosts.get(window);
+                let host = agents
+                    .iter()
+                    .filter(|a| a.window_id == window)
+                    .min_by_key(|a| {
+                        (
+                            !active.contains(&a.pane_id),
+                            previous != Some(&a.pane_id),
+                            &a.pane_id,
+                        )
+                    });
+                if let Some(agent) = host {
+                    self.hosts.insert(window.to_string(), agent.pane_id.clone());
+                }
+                let name = if let Some(name) = overrides.get(window) {
+                    selected(views, Some(name)).map_or("All", |v| v.name.as_str())
+                } else if let Some(agent) = host {
+                    automatic_name(views, &agent.session, &projects[agent.pane_id.as_str()])
+                } else {
+                    let (_, pane) = window_panes[0];
+                    let root = if needs_paths {
+                        self.root(&pane.working_dir)
+                    } else {
+                        pane.working_dir.clone()
+                    };
+                    automatic_name(views, pane.session.as_deref().unwrap_or_default(), &root)
+                };
+                let pane_ids = memberships
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| agents.iter().map(|a| a.pane_id.clone()).collect());
+                (
+                    window.to_string(),
+                    WindowView {
+                        name: name.to_string(),
+                        pane_ids,
+                    },
+                )
+            })
+            .collect()
     }
 }
 
@@ -232,6 +362,132 @@ mod tests {
             project_root(&temp.path().join("non-repo")),
             normalize(&temp.path().join("non-repo"))
         );
+    }
+
+    fn agent(id: &str, window: &str, session: &str, path: &str) -> AgentPane {
+        AgentPane {
+            pane_id: id.into(),
+            window_id: window.into(),
+            session: session.into(),
+            path: path.into(),
+            window_name: window.into(),
+            window_index: None,
+            pane_title: None,
+            status: None,
+            status_ts: None,
+            activity_ts: None,
+            updated_ts: None,
+            window_cmd: None,
+            agent_command: None,
+            agent_kind: None,
+            prompt: None,
+        }
+    }
+
+    fn live(agent: &AgentPane) -> LivePaneInfo {
+        LivePaneInfo {
+            window_id: Some(agent.window_id.clone()),
+            session: Some(agent.session.clone()),
+            working_dir: agent.path.clone(),
+            pid: None,
+            current_command: None,
+            title: None,
+            window: None,
+            session_id: None,
+            window_index: None,
+        }
+    }
+
+    #[test]
+    fn automatic_selection_prefers_regular_rules_then_other_then_all() {
+        let mut views = views();
+        let other = views.pop().unwrap();
+        views.insert(0, other);
+        assert_eq!(
+            automatic_name(&views, "foo", Path::new("/home/me/code/app")),
+            "Named"
+        );
+        assert_eq!(
+            automatic_name(&views, "misc", Path::new("/home/me/work/app")),
+            "Work"
+        );
+        assert_eq!(
+            automatic_name(&views, "misc", Path::new("/elsewhere")),
+            "Other"
+        );
+        assert_eq!(
+            automatic_name(&views[1..], "misc", Path::new("/elsewhere")),
+            "All"
+        );
+        assert_eq!(automatic_name(&[], "foo", Path::new("/elsewhere")), "All");
+    }
+
+    #[test]
+    fn window_views_are_independent_and_focus_in_sidebar_keeps_the_last_agent() {
+        let views: Vec<SidebarView> = serde_yaml::from_str(
+            "- {name: Other, other: true}\n- {name: Named, sessions: [foo]}\n",
+        )
+        .unwrap();
+        let agents = vec![
+            agent("%1", "@1", "foo", "/one"),
+            agent("%2", "@2", "bar", "/two"),
+            agent("%3", "@2", "foo", "/three"),
+        ];
+        let panes = agents
+            .iter()
+            .map(|a| (a.pane_id.clone(), live(a)))
+            .collect();
+        let mut cache = ProjectCache::default();
+        let active = HashSet::from(["%1".into(), "%2".into()]);
+        let resolved = cache.window_views(&views, &agents, &panes, &active, &HashMap::new());
+        assert_eq!(resolved["@1"].name, "Named");
+        assert_eq!(
+            resolved["@1"].pane_ids,
+            HashSet::from(["%1".into(), "%3".into()])
+        );
+        assert_eq!(resolved["@2"].name, "Other");
+        assert_eq!(resolved["@2"].pane_ids, HashSet::from(["%2".into()]));
+
+        let active = HashSet::from(["%3".into()]);
+        assert_eq!(
+            cache.window_views(&views, &agents, &panes, &active, &HashMap::new())["@2"].name,
+            "Named"
+        );
+        let inactive = HashSet::new();
+        assert_eq!(
+            cache.window_views(&views, &agents, &panes, &inactive, &HashMap::new())["@2"].name,
+            "Named"
+        );
+
+        let overrides = HashMap::from([("@1".into(), "Other".into())]);
+        let resolved = cache.window_views(&views, &agents, &panes, &inactive, &overrides);
+        assert_eq!(resolved["@1"].name, "Other");
+        assert_eq!(resolved["@2"].name, "Named");
+        let overrides = HashMap::from([("@1".into(), "removed".into())]);
+        let resolved = cache.window_views(&views, &agents, &panes, &inactive, &overrides);
+        assert_eq!(resolved["@1"].name, "All");
+        assert_eq!(resolved["@1"].pane_ids.len(), 3);
+        assert!(
+            cache
+                .window_views(&[], &agents, &panes, &inactive, &overrides)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn unregistered_window_uses_its_oldest_panes_directory() {
+        let first = agent("%2", "@1", "misc", "/home/me/work/project");
+        let sidebar = agent("%10", "@1", "misc", "/home/me/code/project");
+        let panes = HashMap::from([("%2".into(), live(&first)), ("%10".into(), live(&sidebar))]);
+        let resolved = ProjectCache::default().window_views(
+            &views(),
+            &[],
+            &panes,
+            &HashSet::from(["%10".into()]),
+            &HashMap::new(),
+        );
+        assert_eq!(resolved["@1"].name, "Work");
+        assert!(resolved["@1"].pane_ids.is_empty());
     }
 
     #[test]

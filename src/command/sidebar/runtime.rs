@@ -419,7 +419,7 @@ fn handle_key_press(
         (KeyCode::Char('g'), _) => app.select_first(),
         (KeyCode::Char('v'), _) => app.toggle_layout_mode(),
         (KeyCode::Char('V'), _) => {
-            if let Err(error) = super::view::select(None, false) {
+            if let Err(error) = super::view::select(None, false, false) {
                 tracing::warn!(%error, "failed to cycle sidebar view");
             }
         }

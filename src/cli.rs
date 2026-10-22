@@ -883,13 +883,16 @@ pub enum SidebarAction {
         #[arg(value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
         index: u64,
     },
-    /// Select a named sidebar view, or cycle when no name is given.
+    /// Select a view for this window, or cycle when no name is given.
     View {
         /// Exact configured name, or All to clear the scope
         name: Option<String>,
         /// Print chooser entries, one name per line
         #[arg(long, conflicts_with = "name")]
         list: bool,
+        /// Choose this window's view automatically from the configured rules
+        #[arg(long, conflicts_with_all = ["name", "list"])]
+        clear: bool,
     },
     /// Set sidebar filter mode. Toggles if no mode given.
     Filter {
@@ -1267,8 +1270,8 @@ pub fn run() -> Result<()> {
             Some(SidebarAction::Jump { index }) => {
                 command::sidebar::navigate(command::sidebar::NavAction::Jump(index as usize))
             }
-            Some(SidebarAction::View { name, list }) => {
-                command::sidebar::view::select(name.as_deref(), list)
+            Some(SidebarAction::View { name, list, clear }) => {
+                command::sidebar::view::select(name.as_deref(), list, clear)
             }
             Some(SidebarAction::Filter { mode }) => {
                 command::sidebar::set_filter_mode(mode.as_deref())

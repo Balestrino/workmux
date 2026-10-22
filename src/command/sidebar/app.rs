@@ -573,7 +573,11 @@ impl SidebarApp {
         self.position = snapshot.position;
         self.layout_mode = snapshot.layout_mode;
         self.filter_mode = snapshot.filter_mode;
-        self.view_name = snapshot.view_name;
+        let window_view = self
+            .host_window_id()
+            .and_then(|window| snapshot.window_views.get(window))
+            .cloned();
+        self.view_name = window_view.as_ref().map(|view| view.name.clone());
         self.git_statuses = snapshot.git_statuses;
         self.pr_statuses = snapshot.pr_statuses;
         self.check_statuses = snapshot.check_statuses;
@@ -617,18 +621,22 @@ impl SidebarApp {
         self.stale_pane_ids = snapshot.stale_pane_ids;
         self.agents = snapshot.agents;
 
+        if let Some(view) = window_view {
+            self.agents
+                .retain(|agent| view.pane_ids.contains(&agent.pane_id));
+        }
+
         // Apply session filter: retain only agents in the sidebar's host session.
         if self.filter_mode == SidebarFilterMode::Session
             && let Some(host_session) = self.host_session().map(str::to_owned)
         {
             self.agents.retain(|a| a.session == host_session);
-            // Recompute host_agent_idx after filtering
-            self.host_agent_idx = host_agent_index(
-                &self.agents,
-                self.host_window_id(),
-                &snapshot.active_pane_ids,
-            );
         }
+        self.host_agent_idx = host_agent_index(
+            &self.agents,
+            self.host_window_id(),
+            &snapshot.active_pane_ids,
+        );
 
         // Rows are rebuilt after filtering so header counts reflect what this
         // client actually shows.
@@ -931,8 +939,8 @@ impl SidebarApp {
             start += count;
         }
 
-        // Mark where live work ends. Only the trailing run of dormant groups
-        // counts, so a session filter that strips a group's live agents cannot
+        // Label the trailing run of dormant groups, including an all-stale list,
+        // so a session filter that strips a group's live agents cannot
         // strand the rule in the middle of the list.
         if self.collapse_stale
             && let Some((row, _)) = groups
@@ -940,7 +948,6 @@ impl SidebarApp {
                 .rev()
                 .take_while(|(_, all_stale)| *all_stale)
                 .last()
-            && *row > 0
         {
             rows.insert(
                 *row,
@@ -2333,7 +2340,7 @@ mod tests {
         SidebarSnapshot {
             position: SidebarPosition::Left,
             layout_mode: SidebarLayoutMode::Tiles,
-            view_name: None,
+            window_views: HashMap::new(),
             filter_mode: SidebarFilterMode::None,
             group_by: None,
             expanded_groups: Vec::new(),
@@ -2583,7 +2590,7 @@ mod grouping_tests {
             stale_threshold_secs: super::super::snapshot::STALE_THRESHOLD_SECS,
             position: SidebarPosition::Left,
             layout_mode: SidebarLayoutMode::Tiles,
-            view_name: None,
+            window_views: HashMap::new(),
             filter_mode: SidebarFilterMode::None,
             group_by,
             expanded_groups: Vec::new(),
@@ -2662,13 +2669,18 @@ mod grouping_tests {
             pane_id: "%sidebar".into(),
         });
         let mut snap = snapshot(Some(SidebarGroupBy::Project), grouped_agents());
-        let views = vec![crate::config::SidebarView {
-            name: "Beta".into(),
-            sessions: vec!["beta".into()],
-            ..Default::default()
-        }];
-        super::super::view::ProjectCache::default().retain(&mut snap.agents, &views, Some("Beta"));
-        snap.view_name = Some("Beta".into());
+        snap.window_views.insert(
+            "@1".into(),
+            super::super::view::WindowView {
+                name: "Beta".into(),
+                pane_ids: snap
+                    .agents
+                    .iter()
+                    .filter(|a| a.session == "beta")
+                    .map(|a| a.pane_id.clone())
+                    .collect(),
+            },
+        );
         snap.filter_mode = SidebarFilterMode::Session;
         app.apply_snapshot(snap);
         assert_eq!(app.view_name.as_deref(), Some("Beta"));
@@ -3149,18 +3161,40 @@ mod grouping_tests {
     }
 
     #[test]
-    fn a_list_with_no_live_work_at_all_needs_no_rule() {
+    fn a_list_with_only_stale_groups_starts_with_a_stale_rule() {
         let mut app = app();
         app.apply_snapshot(folding_snapshot(
             Some(SidebarGroupBy::Project),
             grouped_agents(),
         ));
 
-        assert!(
-            !app.rows
-                .iter()
-                .any(|row| matches!(row, SidebarRow::Rule { .. }))
+        assert_eq!(
+            app.rows.first(),
+            Some(&SidebarRow::Rule {
+                label: STALE_RULE_LABEL.to_string(),
+            })
         );
+        assert_eq!(
+            app.rows
+                .iter()
+                .filter(|row| matches!(row, SidebarRow::Rule { .. }))
+                .count(),
+            1
+        );
+        assert!(matches!(
+            app.rows.get(1),
+            Some(SidebarRow::StaleGroup { .. })
+        ));
+        app.list_state.select(None);
+        app.next();
+        assert_eq!(app.list_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn an_empty_grouped_list_has_no_stale_rule() {
+        let mut app = app();
+        app.apply_snapshot(folding_snapshot(Some(SidebarGroupBy::Project), vec![]));
+        assert!(app.rows.is_empty());
     }
 
     #[test]

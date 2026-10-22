@@ -465,9 +465,8 @@ pub fn render_sidebar(f: &mut Frame, app: &mut SidebarApp) {
         };
         f.render_widget(
             footer_line(app, scope),
-            Rect::new(area.x, area.y, area.width, 1),
+            Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
         );
-        area.y = area.y.saturating_add(1);
         area.height = area.height.saturating_sub(1);
     }
 
@@ -496,9 +495,8 @@ pub fn render_sidebar(f: &mut Frame, app: &mut SidebarApp) {
     f.render_widget(block, area);
     let inner = render_template_error(f, app, inner);
 
-    // The footer carries one line: the session filter when it is on, otherwise
-    // the grouping hint while it is still on offer.
-    let footer = if app.filter_mode == SidebarFilterMode::Session {
+    // A named view footer already includes the session filter.
+    let footer = if app.view_name.is_none() && app.filter_mode == SidebarFilterMode::Session {
         Some(filter_footer_line(app))
     } else if app.show_hint() {
         Some(hint_line(app, inner.width as usize))
@@ -2080,6 +2078,33 @@ mod tests {
     }
 
     #[test]
+    fn an_all_stale_view_shows_the_rule_above_groups_and_scope_at_the_bottom() {
+        for mode in [SidebarLayoutMode::Tiles, SidebarLayoutMode::Compact] {
+            let mut app = grouped_compact_app();
+            app.layout_mode = mode;
+            app.view_name = Some("Work".into());
+            app.collapse_stale = true;
+            app.host_agent_idx = None;
+            for agent in &mut app.agents {
+                agent.status = None;
+                agent.activity_ts = None;
+            }
+            app.refresh_stale_pane_ids();
+            app.rebuild_rows();
+            app.list_state.select(None);
+            app.next();
+
+            let lines = rendered(&mut app, 30, 12);
+            assert!(lines[11].contains("[view: Work]"), "{mode:?}: {lines:?}");
+            assert!(lines[0].contains(" STALE "), "{mode:?}: {lines:?}");
+            assert!(lines[1].contains("api"), "{mode:?}: {lines:?}");
+            assert_eq!(app.hit_test_toggle(1, 0), None);
+            assert_eq!(app.hit_test_toggle(1, 1).as_deref(), Some("api"));
+            assert_eq!(app.hit_test_toggle(1, 11), None);
+        }
+    }
+
+    #[test]
     fn compact_group_label_truncates_before_the_count_is_dropped() {
         let mut app = grouped_compact_app();
         let lines = rendered(&mut app, 10, 9);
@@ -2231,9 +2256,32 @@ mod tests {
             app.has_loaded_snapshot = true;
             app.rebuild_rows();
             let lines = rendered(&mut app, 36, 5);
-            assert!(lines[0].contains("[view: Empty]"));
+            assert!(lines[4].contains("[view: Empty]"));
             assert!(lines.iter().any(|line| line.contains("No matching agents")));
             assert!(rendered(&mut app, 36, 1)[0].contains("[view: Empty]"));
+        }
+    }
+
+    #[test]
+    fn named_scope_footer_includes_the_session_filter_without_repeating_it() {
+        for position in [
+            crate::config::SidebarPosition::Left,
+            crate::config::SidebarPosition::Top,
+        ] {
+            let mut app = tile_app();
+            app.position = position;
+            app.view_name = Some("Work".into());
+            app.filter_mode = SidebarFilterMode::Session;
+            let lines = rendered(&mut app, 50, 10);
+            assert!(lines[9].contains("[view: Work + session:"));
+            assert_eq!(
+                lines
+                    .iter()
+                    .filter(|line| line.contains("session:"))
+                    .count(),
+                1
+            );
+            assert_eq!(app.hit_test(1, 9), None);
         }
     }
 

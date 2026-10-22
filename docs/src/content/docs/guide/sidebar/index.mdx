@@ -337,12 +337,15 @@ workmux sidebar filter none     # Turn off the session filter
 
 ### Named views
 
-Press `V` to cycle through views configured in `sidebar.views`, such as agents
-in specific tmux sessions or projects under `~/code`. Use `other: true` for a
-view containing everything that does not match your other views.
+Configure `sidebar.views` to show agents from selected sessions or project
+directories. Each window automatically shows the view matching its own agent.
+Use `other: true` for a view containing everything that does not match your
+other views.
 
-See [Named views](/reference/commands/sidebar/#named-views) for configuration,
-matching rules, and a tmux popup chooser.
+Press `V` to browse another view in the current window, or run
+`workmux sidebar view --clear` to return to automatic selection.
+See [Named views](/reference/commands/sidebar/#named-views) for configuration
+and matching rules.
 
 ### Sleeping agents
 
