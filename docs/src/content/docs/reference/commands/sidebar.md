@@ -142,6 +142,99 @@ configured placement. Width and height also accept percentages, such as
 them without creating duplicate panes. The `off` action rejects position and
 dimension flags because they have no effect while stopping the sidebar.
 
+## Named views
+
+Use named views to show agents from selected sessions or project directories.
+Add `sidebar.views` to your global config at `~/.config/workmux/config.yaml`
+(or `$XDG_CONFIG_HOME/workmux/config.yaml`). Views cannot be set per project.
+
+```yaml
+sidebar:
+  views:
+    - name: Named sessions
+      sessions: [foo, bar, xyz]
+    - name: Code
+      project_dirs: [~/code]
+    - name: Work
+      project_dirs: [~/work]
+    - name: Other
+      other: true
+```
+
+Press `V` in the sidebar to cycle All → Named sessions → Code → Work → Other → All.
+All is always available, followed by your views in configuration order. Other
+shows agents that match none of the other views.
+
+### Switching views
+
+```bash
+workmux sidebar view --list             # List All and your configured views
+workmux sidebar view Code
+workmux sidebar view 'Named sessions'
+workmux sidebar view All
+workmux sidebar view                    # Cycle, like V
+```
+
+The selected view appears above the agents. All sidebars in the same tmux server
+share the selection, including after turning the sidebar off and on. A tmux
+server restart starts at All. Removing or renaming the selected view also
+returns to All. If the selected view has no matching agents, it stays selected
+and shows "No matching agents".
+
+If the `f` session filter is on, the sidebar shows only agents that match both
+the view and the current session. Choosing All does not turn off `f`.
+Views do not change row grouping (`sidebar.group_by`) or which windows have a
+sidebar (`sidebar --session`). `next`, `prev`, and `jump` follow the selected
+view once the sidebar updates.
+
+A top sidebar needs at least two rows: one for the view name and one for agents.
+
+### Matching rules
+
+- `sessions` matches exact, case-sensitive tmux session names. `foo` does not
+  match `foobar` or `Foo`; wildcards are not supported.
+- `project_dirs` matches each directory and its subdirectories. `~/code` does
+  not match `~/code-old`. Use absolute paths or `~` for your home directory;
+  environment variables such as `$HOME` are not expanded. Symlinks are resolved
+  for paths that exist.
+- Linked worktrees belong to the main repository's directory, even if the
+  worktree is stored elsewhere. Bare repositories use the bare directory. If
+  workmux cannot identify a repository, it uses the agent's recorded working
+  directory. After moving a repository, allow about 30 seconds for views to update.
+- An agent matches a view if it matches any of its session names or project
+  directories. The same agent can appear in more than one view.
+- `other: true` shows agents that match none of the other views. Only one view
+  can use it, and that view cannot also have `sessions` or `project_dirs`.
+  Without an Other view, unmatched agents appear only in All.
+- Give each view a unique name other than `All`, without leading or trailing
+  spaces. Each view needs `sessions`, `project_dirs`, or `other: true`.
+
+### Popup chooser
+
+Install the numbered chooser from a workmux checkout. It requires Bash and
+`workmux` on your tmux server's PATH:
+
+```bash
+mkdir -p ~/.local/bin
+cp scripts/workmux-sidebar-view ~/.local/bin/workmux-sidebar-view
+chmod +x ~/.local/bin/workmux-sidebar-view
+```
+
+Add this to `~/.tmux.conf`, then reload the tmux config:
+
+```bash
+bind-key V display-popup -E -w 60 -h 16 '~/.local/bin/workmux-sidebar-view'
+```
+
+Press **prefix + V**, type a view number, and press Enter. Ctrl-D cancels without
+changing the view.
+
+For your own chooser, `workmux sidebar view --list` prints one name per line and
+works outside tmux. Apply a choice with `workmux sidebar view -- "$name"`; the
+`--` allows names beginning with a dash. Selecting a view requires tmux but not
+a running sidebar. An unknown name leaves the selection unchanged and returns
+an error.
+
 ## How it works
 
 When enabled, a background daemon polls tmux state every 2 seconds and pushes
@@ -184,96 +277,3 @@ Starting global mode still replaces any session-scoped sidebars.
 ```bash
 bind C-t run-shell "workmux sidebar"
 ```
-
-## Named views
-
-Define `sidebar.views` in your **global** config (`~/.config/workmux/config.yaml`,
-or under `$XDG_CONFIG_HOME`). Project configs do not override views. Views scope
-which agents appear; `sidebar.group_by` still controls how those rows are grouped.
-
-```yaml
-sidebar:
-  views:
-    - name: Named sessions
-      sessions: [foo, bar, xyz]
-    - name: Code
-      project_dirs: [~/code]
-    - name: Work
-      project_dirs: [~/work]
-    - name: Other
-      other: true
-```
-
-Press **`V`** (uppercase) to cycle **All → Named sessions → Code → Work → Other →
-All**. Lowercase `v` still changes the layout. The active view appears above the
-rows in both left and top sidebars. Empty views show “No matching agents”; they
-do not fall back to All. A top sidebar needs at least two rows to show both the
-scope and agents.
-
-### Matching and selection
-
-- Session names are exact and case-sensitive: `foo` does not match `foobar` or
-  `Foo`. No glob or regular-expression syntax is used.
-- `project_dirs` matches a directory itself and its descendants, not siblings
-  with the same prefix: `~/code` does not match `~/code-old`.
-- Paths must be absolute or begin with `~/` (`~` alone is also supported).
-  Home expansion uses the user running workmux. Existing paths resolve symlinks;
-  other paths are normalized lexically. Environment variables are not expanded.
-- A project's location is its main Git worktree root, including for linked
-  worktrees stored elsewhere. For bare repositories it is the bare root. If Git
-  discovery fails (including non-Git agents), the recorded agent working
-  directory is used instead. Git discovery is cached for up to 30 seconds.
-- Entries within a list, and `sessions` and `project_dirs` within a view, use
-  **OR**. Views may overlap; there is no first-match assignment.
-- `other: true` matches agents excluded by **every** regular view, including
-  session-name filters. It cannot have filters of its own. At most one Other
-  view may be configured; its name and position are your choice. Without it,
-  unmatched agents are available only in All.
-- All is always first, followed by configuration order. Names must be unique,
-  nonempty, single-line, and have no leading/trailing whitespace. `All` is
-  reserved. Each regular view needs at least one filter.
-- Selection is shared by all sidebars in the current tmux server and survives
-  sidebar off/on, but not a tmux server restart. Initial selection is All. If the
-  selected view is removed or renamed on config reload, the scope becomes All.
-- The `f` / `sidebar filter session` filter is independent and **intersects** the
-  selected view with each sidebar's host session. Selecting All does not clear
-  the session filter. `sidebar --session` still controls where sidebars exist,
-  not which named view is selected.
-- `next`, `prev`, and `jump` use the scoped agent inventory after the daemon
-  refreshes. Existing stale-agent navigation rules still apply.
-- With no views configured, the sidebar appearance and existing filters are
-  unchanged; cycling views has no effect on the agent list.
-
-### CLI and popup chooser
-
-```bash
-workmux sidebar view --list             # All, then configured names, one per line
-workmux sidebar view 'Named sessions'   # Select an exact name
-workmux sidebar view Code
-workmux sidebar view All                # Clear only the named scope
-workmux sidebar view                    # Cycle, like V
-```
-
-Listing does not require a running sidebar or tmux server. Selection requires
-tmux but can be made before starting the sidebar. Unknown names fail without
-changing the selection. Use `workmux sidebar view -- "$name"` in scripts to
-support names beginning with a dash.
-
-The repository includes a Bash chooser, `scripts/workmux-sidebar-view`, which
-lists views by number and applies the selection. It requires only Bash and
-workmux, not fzf. From a workmux checkout, install it:
-
-```bash
-mkdir -p ~/.local/bin
-cp scripts/workmux-sidebar-view ~/.local/bin/workmux-sidebar-view
-chmod +x ~/.local/bin/workmux-sidebar-view
-```
-
-Add this to `~/.tmux.conf`, then reload the tmux config:
-
-```tmux
-bind-key V display-popup -E -w 60 -h 16 '~/.local/bin/workmux-sidebar-view'
-```
-
-Press **prefix + V**, type a view number, and press Enter. Ctrl-D cancels without
-changing the view. Ensure `workmux` is on the PATH inherited by the tmux server.
