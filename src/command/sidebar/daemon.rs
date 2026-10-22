@@ -51,7 +51,7 @@ struct TmuxState {
     position: Option<String>,
     layout: Option<String>,
     filter: Option<String>,
-    window_views: HashMap<String, String>,
+    view_override: Option<String>,
     sleeping_panes: Option<String>,
     group_by: Option<String>,
     expanded_groups: Option<String>,
@@ -72,7 +72,7 @@ fn query_tmux_state(tmux: &TmuxBackend) -> Result<TmuxState> {
         position: snapshot.position,
         layout: snapshot.layout,
         filter: snapshot.filter,
-        window_views: snapshot.window_views,
+        view_override: snapshot.view_override,
         sleeping_panes: snapshot.sleeping_panes,
         group_by: snapshot.group_by,
         expanded_groups: snapshot.expanded_groups,
@@ -2449,7 +2449,7 @@ pub fn run() -> Result<()> {
                     &output.snapshot.agents,
                     &tmux_state.live_panes,
                     &tmux_state.active_pane_ids,
-                    &tmux_state.window_views,
+                    tmux_state.view_override.as_deref(),
                 );
             }
             for window in tmux_state.window_pane_counts.keys() {
@@ -4803,7 +4803,7 @@ mod tests {
                         position: None,
                         layout: None,
                         filter: None,
-                        window_views: HashMap::new(),
+                        view_override: None,
                         sleeping_panes: None,
                         group_by: None,
                         expanded_groups: None,

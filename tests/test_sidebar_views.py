@@ -55,10 +55,8 @@ def test_sidebar_view_selection(
         env.tmux(
             [
                 "show-option",
-                "-wqv",
-                "-t",
-                runner_pane,
-                "@workmux_sidebar_window_view",
+                "-gqv",
+                "@workmux_sidebar_view_override",
             ]
         ).stdout.strip()
         == "Named sessions"
@@ -68,10 +66,8 @@ def test_sidebar_view_selection(
         env.tmux(
             [
                 "show-option",
-                "-wqv",
-                "-t",
-                runner_pane,
-                "@workmux_sidebar_window_view",
+                "-gqv",
+                "@workmux_sidebar_view_override",
             ]
         ).stdout.strip()
         == "Code"
@@ -258,12 +254,30 @@ def test_windows_choose_their_own_view(
                 == work_pane
             )
 
-            # Browsing another view changes only its source window.
+            # V selects one shared view, even across windows with different rules.
+            env.tmux(["select-pane", "-t", personal_sidebar])
+            env.tmux(["send-keys", "-t", personal_sidebar, "V"])
+            assert poll_until(
+                lambda: scope(personal_pane).get("name") == "Work"
+                and scope(work_pane).get("name") == "Work"
+            )
+            assert scope(personal_pane)["pane_ids"] == [work_pane]
+            assert poll_until(
+                lambda: "[view: Work]" in screen(personal_sidebar).splitlines()[-1]
+                and "[view: Work]" in screen(work_sidebar).splitlines()[-1]
+            )
+
+            # CLI choices are shared too; clearing restores each window's rules.
             command(work_pane, "sidebar", "view", "Personal")
-            assert poll_until(lambda: scope(work_pane).get("name") == "Personal")
-            assert scope(personal_pane)["name"] == "Personal"
-            command(work_pane, "sidebar", "view", "--clear")
-            assert poll_until(lambda: scope(work_pane).get("name") == "Work")
+            assert poll_until(
+                lambda: scope(work_pane).get("name") == "Personal"
+                and scope(personal_pane).get("name") == "Personal"
+            )
+            command(personal_pane, "sidebar", "view", "--clear")
+            assert poll_until(
+                lambda: scope(work_pane).get("name") == "Work"
+                and scope(personal_pane).get("name") == "Personal"
+            )
 
             if position == "left":
                 env.tmux(

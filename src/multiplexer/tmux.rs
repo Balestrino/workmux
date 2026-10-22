@@ -46,7 +46,7 @@ const SIDEBAR_STATE_FORMAT: &str = concat!(
     server_boot_format!(),
     "\x1f#{@workmux_sidebar_position}\x1f#{@workmux_sidebar_layout}",
     "\x1f#{@workmux_sidebar_filter}\x1f#{@workmux_sleeping_panes}",
-    "\x1f#{@workmux_sidebar_group_by}\x1f#{@workmux_sidebar_expanded}\x1f#{@workmux_sidebar_window_view}\x1f#{pane_current_path}"
+    "\x1f#{@workmux_sidebar_group_by}\x1f#{@workmux_sidebar_expanded}\x1f#{@workmux_sidebar_view_override}\x1f#{pane_current_path}"
 );
 
 /// One tmux server observation containing every input needed by a daemon tick.
@@ -63,7 +63,7 @@ pub(crate) struct TmuxSidebarSnapshot {
     pub position: Option<String>,
     pub layout: Option<String>,
     pub filter: Option<String>,
-    pub window_views: HashMap<String, String>,
+    pub view_override: Option<String>,
     pub sleeping_panes: Option<String>,
     pub group_by: Option<String>,
     pub expanded_groups: Option<String>,
@@ -157,7 +157,7 @@ fn parse_sidebar_snapshot(output: &str) -> Result<TmuxSidebarSnapshot> {
         position: None,
         layout: None,
         filter: None,
-        window_views: HashMap::new(),
+        view_override: None,
         sleeping_panes: None,
         group_by: None,
         expanded_groups: None,
@@ -195,9 +195,6 @@ fn parse_sidebar_snapshot(output: &str) -> Result<TmuxSidebarSnapshot> {
             || !matches!(fields[10], "0" | "1")
         {
             return Err(anyhow!("tmux returned malformed sidebar state: {record:?}"));
-        }
-        if let Some(view) = nonempty(fields[19]) {
-            snapshot.window_views.insert(window_id.clone(), view);
         }
         let status = nonempty(fields[7]);
         // Linked windows appear once per session, but their panes are shared.
@@ -241,6 +238,7 @@ fn parse_sidebar_snapshot(output: &str) -> Result<TmuxSidebarSnapshot> {
             snapshot.position = nonempty(fields[13]);
             snapshot.layout = nonempty(fields[14]);
             snapshot.filter = nonempty(fields[15]);
+            snapshot.view_override = nonempty(fields[19]);
             snapshot.sleeping_panes = nonempty(fields[16]);
             snapshot.group_by = nonempty(fields[17]);
             snapshot.expanded_groups = nonempty(fields[18]);
@@ -1748,10 +1746,7 @@ mod tests {
         assert_eq!(snapshot.position.as_deref(), Some("top"));
         assert_eq!(snapshot.layout.as_deref(), Some("compact"));
         assert_eq!(snapshot.filter.as_deref(), Some("session"));
-        assert_eq!(
-            snapshot.window_views.get("@2").map(String::as_str),
-            Some("Code")
-        );
+        assert_eq!(snapshot.view_override.as_deref(), Some("Code"));
         assert_eq!(snapshot.sleeping_panes.as_deref(), Some("%7 %8"));
         assert_eq!(snapshot.group_by.as_deref(), Some("project"));
         assert_eq!(snapshot.expanded_groups.as_deref(), Some("api\tmobile"));

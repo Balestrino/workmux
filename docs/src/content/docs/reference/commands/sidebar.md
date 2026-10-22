@@ -161,7 +161,7 @@ sidebar:
       other: true
 ```
 
-Each window chooses its own view from its agent's session and project. It uses
+By default, each window chooses its own view from its agent's session and project. It uses
 the first matching view in configuration order, then Other if nothing matches,
 or All if there is no Other view. Switching to another window shows that
 window's view without changing the one you left.
@@ -177,19 +177,20 @@ workmux sidebar view --list             # List All and your configured views
 workmux sidebar view Code
 workmux sidebar view 'Named sessions'
 workmux sidebar view All
-workmux sidebar view                    # Cycle this window
+workmux sidebar view                    # Cycle all sidebars
 workmux sidebar view --clear            # Return to automatic selection
 ```
 
 The view name appears at the bottom of the sidebar. Press `V` or use the commands
-above to browse a different view in this window only. Cycling visits All, then
-your views in configuration order.
+above to select the same view for every sidebar in the tmux server. Cycling
+visits All, then your views in configuration order. From automatic selection,
+`V` advances from the current window's view.
 
-A manual choice lasts until you run `workmux sidebar view --clear` or close the
-window. Turning the sidebar off and on keeps it; restarting tmux restores
-automatic selection. Removing or renaming a manually selected view returns
-that window to All. A view with no matching agents stays selected and shows
-"No matching agents".
+Run `workmux sidebar view --clear` to return every window to its own rule-based
+view. The shared choice survives closing windows and turning the sidebar off
+and on; restarting tmux restores automatic selection. Removing or renaming a
+manually selected view returns all sidebars to All. A view with no matching
+agents stays selected and shows "No matching agents".
 
 If the `f` session filter is on, the sidebar shows only agents that match both
 the view and the current session. Choosing All does not turn off `f`.

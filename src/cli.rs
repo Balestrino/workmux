@@ -883,14 +883,14 @@ pub enum SidebarAction {
         #[arg(value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
         index: u64,
     },
-    /// Select a view for this window, or cycle when no name is given.
+    /// Select a view for all sidebars, or cycle when no name is given.
     View {
         /// Exact configured name, or All to clear the scope
         name: Option<String>,
         /// Print chooser entries, one name per line
         #[arg(long, conflicts_with = "name")]
         list: bool,
-        /// Choose this window's view automatically from the configured rules
+        /// Restore automatic rule-based selection for each window
         #[arg(long, conflicts_with_all = ["name", "list"])]
         clear: bool,
     },

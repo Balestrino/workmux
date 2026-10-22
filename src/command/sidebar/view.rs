@@ -1,4 +1,4 @@
-//! Per-window sidebar views and their command-line controls.
+//! Automatic per-window views with a shared manual selection.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -11,7 +11,7 @@ use crate::config::{Config, SidebarView};
 use crate::multiplexer::{AgentPane, LivePaneInfo};
 use serde::{Deserialize, Serialize};
 
-pub const OPTION: &str = "@workmux_sidebar_window_view";
+pub const OPTION: &str = "@workmux_sidebar_view_override";
 pub const SCOPE_OPTION: &str = "@workmux_sidebar_scope";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,15 +67,14 @@ pub fn select(name: Option<&str>, list: bool, clear: bool) -> Result<()> {
         }
         return Ok(());
     }
-    let window = current_window()?;
     if clear {
         Cmd::new("tmux")
-            .args(&["set-option", "-wu", "-t", &window, OPTION])
+            .args(&["set-option", "-gu", OPTION])
             .run()?;
     } else {
-        let scope = read_scope(&window);
+        let scope = read_scope(&current_window()?);
         let current = Cmd::new("tmux")
-            .args(&["show-option", "-wqv", "-t", &window, OPTION])
+            .args(&["show-option", "-gqv", OPTION])
             .run_and_capture_stdout()?;
         let current = if current.trim().is_empty() {
             scope.as_ref().map_or("All", |scope| scope.name.as_str())
@@ -87,7 +86,7 @@ pub fn select(name: Option<&str>, list: bool, clear: bool) -> Result<()> {
             bail!("unknown sidebar view {name:?}; use workmux sidebar view --list");
         }
         Cmd::new("tmux")
-            .args(&["set-option", "-w", "-t", &window, OPTION, name])
+            .args(&["set-option", "-g", OPTION, name])
             .run()?;
     }
     super::signal_daemon();
@@ -165,7 +164,7 @@ impl ProjectCache {
         agents: &[AgentPane],
         panes: &HashMap<String, LivePaneInfo>,
         active: &HashSet<String>,
-        overrides: &HashMap<String, String>,
+        view_override: Option<&str>,
     ) -> HashMap<String, WindowView> {
         if views.is_empty() {
             self.projects.clear();
@@ -228,7 +227,7 @@ impl ProjectCache {
                 if let Some(agent) = host {
                     self.hosts.insert(window.to_string(), agent.pane_id.clone());
                 }
-                let name = if let Some(name) = overrides.get(window) {
+                let name = if let Some(name) = view_override {
                     selected(views, Some(name)).map_or("All", |v| v.name.as_str())
                 } else if let Some(agent) = host {
                     automatic_name(views, &agent.session, &projects[agent.pane_id.as_str()])
@@ -439,7 +438,7 @@ mod tests {
             .collect();
         let mut cache = ProjectCache::default();
         let active = HashSet::from(["%1".into(), "%2".into()]);
-        let resolved = cache.window_views(&views, &agents, &panes, &active, &HashMap::new());
+        let resolved = cache.window_views(&views, &agents, &panes, &active, None);
         assert_eq!(resolved["@1"].name, "Named");
         assert_eq!(
             resolved["@1"].pane_ids,
@@ -450,26 +449,35 @@ mod tests {
 
         let active = HashSet::from(["%3".into()]);
         assert_eq!(
-            cache.window_views(&views, &agents, &panes, &active, &HashMap::new())["@2"].name,
+            cache.window_views(&views, &agents, &panes, &active, None)["@2"].name,
             "Named"
         );
         let inactive = HashSet::new();
         assert_eq!(
-            cache.window_views(&views, &agents, &panes, &inactive, &HashMap::new())["@2"].name,
+            cache.window_views(&views, &agents, &panes, &inactive, None)["@2"].name,
             "Named"
         );
 
-        let overrides = HashMap::from([("@1".into(), "Other".into())]);
-        let resolved = cache.window_views(&views, &agents, &panes, &inactive, &overrides);
+        let resolved = cache.window_views(&views, &agents, &panes, &inactive, Some("Other"));
         assert_eq!(resolved["@1"].name, "Other");
-        assert_eq!(resolved["@2"].name, "Named");
-        let overrides = HashMap::from([("@1".into(), "removed".into())]);
-        let resolved = cache.window_views(&views, &agents, &panes, &inactive, &overrides);
+        assert_eq!(resolved["@2"].name, "Other");
+        assert_eq!(resolved["@1"].pane_ids, resolved["@2"].pane_ids);
+        let resolved = cache.window_views(&views, &agents, &panes, &inactive, Some("removed"));
         assert_eq!(resolved["@1"].name, "All");
         assert_eq!(resolved["@1"].pane_ids.len(), 3);
+        assert_eq!(resolved["@2"].name, "All");
+        let restored = cache.window_views(
+            &views,
+            &agents,
+            &panes,
+            &HashSet::from(["%1".into(), "%2".into()]),
+            None,
+        );
+        assert_eq!(restored["@1"].name, "Named");
+        assert_eq!(restored["@2"].name, "Other");
         assert!(
             cache
-                .window_views(&[], &agents, &panes, &inactive, &overrides)
+                .window_views(&[], &agents, &panes, &inactive, Some("Other"))
                 .is_empty()
         );
     }
@@ -484,7 +492,7 @@ mod tests {
             &[],
             &panes,
             &HashSet::from(["%10".into()]),
-            &HashMap::new(),
+            None,
         );
         assert_eq!(resolved["@1"].name, "Work");
         assert!(resolved["@1"].pane_ids.is_empty());
