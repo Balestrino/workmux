@@ -51,7 +51,7 @@ struct TmuxState {
     position: Option<String>,
     layout: Option<String>,
     filter: Option<String>,
-    view_override: Option<String>,
+    views_enabled: Option<String>,
     sleeping_panes: Option<String>,
     group_by: Option<String>,
     expanded_groups: Option<String>,
@@ -72,7 +72,7 @@ fn query_tmux_state(tmux: &TmuxBackend) -> Result<TmuxState> {
         position: snapshot.position,
         layout: snapshot.layout,
         filter: snapshot.filter,
-        view_override: snapshot.view_override,
+        views_enabled: snapshot.views_enabled,
         sleeping_panes: snapshot.sleeping_panes,
         group_by: snapshot.group_by,
         expanded_groups: snapshot.expanded_groups,
@@ -2449,7 +2449,7 @@ pub fn run() -> Result<()> {
                     &output.snapshot.agents,
                     &tmux_state.live_panes,
                     &tmux_state.active_pane_ids,
-                    tmux_state.view_override.as_deref(),
+                    super::view::is_enabled(tmux_state.views_enabled.as_deref()),
                 );
             }
             for window in tmux_state.window_pane_counts.keys() {
@@ -4803,7 +4803,7 @@ mod tests {
                         position: None,
                         layout: None,
                         filter: None,
-                        view_override: None,
+                        views_enabled: None,
                         sleeping_panes: None,
                         group_by: None,
                         expanded_groups: None,

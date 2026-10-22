@@ -46,7 +46,7 @@ const SIDEBAR_STATE_FORMAT: &str = concat!(
     server_boot_format!(),
     "\x1f#{@workmux_sidebar_position}\x1f#{@workmux_sidebar_layout}",
     "\x1f#{@workmux_sidebar_filter}\x1f#{@workmux_sleeping_panes}",
-    "\x1f#{@workmux_sidebar_group_by}\x1f#{@workmux_sidebar_expanded}\x1f#{@workmux_sidebar_view_override}\x1f#{pane_current_path}"
+    "\x1f#{@workmux_sidebar_group_by}\x1f#{@workmux_sidebar_expanded}\x1f#{@workmux_sidebar_views_enabled}\x1f#{pane_current_path}"
 );
 
 /// One tmux server observation containing every input needed by a daemon tick.
@@ -63,7 +63,7 @@ pub(crate) struct TmuxSidebarSnapshot {
     pub position: Option<String>,
     pub layout: Option<String>,
     pub filter: Option<String>,
-    pub view_override: Option<String>,
+    pub views_enabled: Option<String>,
     pub sleeping_panes: Option<String>,
     pub group_by: Option<String>,
     pub expanded_groups: Option<String>,
@@ -157,7 +157,7 @@ fn parse_sidebar_snapshot(output: &str) -> Result<TmuxSidebarSnapshot> {
         position: None,
         layout: None,
         filter: None,
-        view_override: None,
+        views_enabled: None,
         sleeping_panes: None,
         group_by: None,
         expanded_groups: None,
@@ -238,7 +238,7 @@ fn parse_sidebar_snapshot(output: &str) -> Result<TmuxSidebarSnapshot> {
             snapshot.position = nonempty(fields[13]);
             snapshot.layout = nonempty(fields[14]);
             snapshot.filter = nonempty(fields[15]);
-            snapshot.view_override = nonempty(fields[19]);
+            snapshot.views_enabled = nonempty(fields[19]);
             snapshot.sleeping_panes = nonempty(fields[16]);
             snapshot.group_by = nonempty(fields[17]);
             snapshot.expanded_groups = nonempty(fields[18]);
@@ -1721,7 +1721,7 @@ mod tests {
 
     #[test]
     fn sidebar_snapshot_parses_one_server_observation() {
-        let output = "\x1e%7\x1f12345\x1fnode\x1fAgent\x1fmain\x1fwork\x1f@2\x1f✓\x1f1\x1f1\x1f1\x1f4\x1f1700000000:42\x1ftop\x1fcompact\x1fsession\x1f%7 %8\x1fproject\x1fapi\tmobile\x1fCode\x1f/repo\n\x1e%8\x1f12346\x1fbash\x1fShell\x1fmain\x1fwork\x1f@2\x1f\x1f1\x1f1\x1f0\x1f4\x1f1700000000:42\x1ftop\x1fcompact\x1fsession\x1f%7 %8\x1fproject\x1fapi\tmobile\x1fCode\x1f/repo\n";
+        let output = "\x1e%7\x1f12345\x1fnode\x1fAgent\x1fmain\x1fwork\x1f@2\x1f✓\x1f1\x1f1\x1f1\x1f4\x1f1700000000:42\x1ftop\x1fcompact\x1fsession\x1f%7 %8\x1fproject\x1fapi\tmobile\x1foff\x1f/repo\n\x1e%8\x1f12346\x1fbash\x1fShell\x1fmain\x1fwork\x1f@2\x1f\x1f1\x1f1\x1f0\x1f4\x1f1700000000:42\x1ftop\x1fcompact\x1fsession\x1f%7 %8\x1fproject\x1fapi\tmobile\x1foff\x1f/repo\n";
 
         let snapshot = parse_sidebar_snapshot(output).unwrap();
 
@@ -1746,7 +1746,7 @@ mod tests {
         assert_eq!(snapshot.position.as_deref(), Some("top"));
         assert_eq!(snapshot.layout.as_deref(), Some("compact"));
         assert_eq!(snapshot.filter.as_deref(), Some("session"));
-        assert_eq!(snapshot.view_override.as_deref(), Some("Code"));
+        assert_eq!(snapshot.views_enabled.as_deref(), Some("off"));
         assert_eq!(snapshot.sleeping_panes.as_deref(), Some("%7 %8"));
         assert_eq!(snapshot.group_by.as_deref(), Some("project"));
         assert_eq!(snapshot.expanded_groups.as_deref(), Some("api\tmobile"));

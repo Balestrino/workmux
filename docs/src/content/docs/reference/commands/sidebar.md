@@ -37,7 +37,7 @@ Each agent row displays:
 | `g`/`G` | Jump to first/last        |
 | `v`     | Toggle layout mode        |
 | `f`     | Toggle session filter     |
-| `V`     | Cycle named views         |
+| `V`     | Toggle rule-based views   |
 | `z`     | Toggle sleeping on agent  |
 | `t`     | Toggle grouping           |
 | `h`/`l` | Unfold/fold current group |
@@ -161,8 +161,8 @@ sidebar:
       other: true
 ```
 
-By default, each window chooses its own view from its agent's session and project. It uses
-the first matching view in configuration order, then Other if nothing matches,
+Views are enabled by default when configured. Each window uses the first view
+matching its agent's session or project, then Other if nothing matches,
 or All if there is no Other view. Switching to another window shows that
 window's view without changing the one you left.
 
@@ -170,35 +170,31 @@ In a window with several agents, the view follows the active agent and stays
 on that view when you focus the sidebar. A window without a registered agent
 uses its oldest pane's session and working directory.
 
-### Switching views
+### Turning views on and off
+
+Press `V` to toggle views for every sidebar in the tmux server:
+
+- **On:** each window shows agents matching its own view.
+- **Off:** every sidebar shows all agents.
 
 ```bash
-workmux sidebar view --list             # List All and your configured views
-workmux sidebar view Code
-workmux sidebar view 'Named sessions'
-workmux sidebar view All
-workmux sidebar view                    # Cycle all sidebars
-workmux sidebar view --clear            # Return to automatic selection
+workmux sidebar view       # Toggle views on/off
+workmux sidebar view on    # Apply each window's matching rules
+workmux sidebar view off   # Show all agents in every sidebar
 ```
 
-The view name appears at the bottom of the sidebar. Press `V` or use the commands
-above to select the same view for every sidebar in the tmux server. Cycling
-visits All, then your views in configuration order. From automatic selection,
-`V` advances from the current window's view.
+The view name appears at the bottom of the sidebar, or All when views are off.
+A view with no matching agents shows "No matching agents". Turning the sidebar
+off and on preserves the toggle; restarting tmux enables views again.
 
-Run `workmux sidebar view --clear` to return every window to its own rule-based
-view. The shared choice survives closing windows and turning the sidebar off
-and on; restarting tmux restores automatic selection. Removing or renaming a
-manually selected view returns all sidebars to All. A view with no matching
-agents stays selected and shows "No matching agents".
-
-If the `f` session filter is on, the sidebar shows only agents that match both
-the view and the current session. Choosing All does not turn off `f`.
+The `f` session filter works in both modes. When it is on, each sidebar shows
+only agents in its current session, whether or not views are enabled.
 Views do not change row grouping (`sidebar.group_by`) or which windows have a
-sidebar (`sidebar --session`). `next`, `prev`, and `jump` follow the selected
-view once the sidebar updates.
+sidebar (`sidebar --session`). `next`, `prev`, and `jump` follow the current
+window's view once the sidebar updates.
 
 A top sidebar needs at least two rows: one for the view name and one for agents.
+With no views configured, `V` does not change which agents appear.
 
 ### Matching rules
 
@@ -219,10 +215,6 @@ A top sidebar needs at least two rows: one for the view name and one for agents.
   Without an Other view, unmatched agents appear only in All.
 - Give each view a unique name other than `All`, without leading or trailing
   spaces. Each view needs `sessions`, `project_dirs`, or `other: true`.
-
-`workmux sidebar view --list` works outside tmux. Selecting a view requires tmux
-but not a running sidebar. For names beginning with a dash, use
-`workmux sidebar view -- "$name"`.
 
 ## How it works
 

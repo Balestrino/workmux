@@ -12,7 +12,7 @@ pytestmark = pytest.mark.tmux_only
 
 
 @pytest.mark.parametrize("position", ["left", "top"])
-def test_sidebar_view_selection(
+def test_sidebar_view_toggle_and_config_reload(
     mux_server: TmuxEnvironment, workmux_exe_path: Path, repo_path: Path, position: str
 ):
     env = mux_server
@@ -41,42 +41,23 @@ def test_sidebar_view_selection(
             assert result.returncode == 0, result.stderr
         return result
 
-    assert cli("view", "--list").stdout.splitlines() == [
-        "All",
-        "Named sessions",
-        "Code",
-        "Empty",
-        "Other",
-    ]
-    assert cli("view", "missing", check=False).returncode != 0
-    cli("view", "All")
-    cli("view")
+    assert cli("view", "Named sessions", check=False).returncode != 0
+    assert cli("view", "--clear", check=False).returncode != 0
+    cli("view", "off")
     assert (
         env.tmux(
-            [
-                "show-option",
-                "-gqv",
-                "@workmux_sidebar_view_override",
-            ]
+            ["show-option", "-gqv", "@workmux_sidebar_views_enabled"]
         ).stdout.strip()
-        == "Named sessions"
+        == "off"
     )
     cli("view")
     assert (
         env.tmux(
-            [
-                "show-option",
-                "-gqv",
-                "@workmux_sidebar_view_override",
-            ]
+            ["show-option", "-gqv", "@workmux_sidebar_views_enabled"]
         ).stdout.strip()
-        == "Code"
+        == "on"
     )
 
-    # Register a real agent so daemon filtering and navigation can be observed.
-    env.run_command(
-        [str(workmux_exe_path), "set-window-status", "working"], cwd=repo_path
-    )
     with attached_client(env):
         cli("on", "--position", position, "--width", "40", "--height", "4")
         try:
@@ -97,7 +78,6 @@ def test_sidebar_view_selection(
                     ).stdout.split()
                 return json.loads(raw)["pane_ids"]
 
-            assert poll_until(lambda: runner_pane in inventory(), timeout=10)
             panes = env.tmux(
                 ["list-panes", "-t", "test:", "-F", "#{pane_id}"]
             ).stdout.splitlines()
@@ -106,37 +86,38 @@ def test_sidebar_view_selection(
             def screen():
                 return env.tmux(["capture-pane", "-p", "-t", sidebar]).stdout
 
-            assert poll_until(lambda: "[view: Code]" in screen().splitlines()[-1])
-            cli("view", "Empty")
             assert poll_until(
-                lambda: "No matching agents" in screen() and not inventory()
+                lambda: "[view: Named sessions]" in screen().splitlines()[-1]
+                and "No matching agents" in screen(),
+                timeout=10,
             )
-            assert "[view: Empty]" in screen()
-            cli("view", "Other")
-            assert poll_until(lambda: "[view: Other]" in screen() and not inventory())
-            cli("view")
+            env.run_command(
+                [str(workmux_exe_path), "set-window-status", "working"], cwd=repo_path
+            )
+            assert poll_until(lambda: runner_pane in inventory(), timeout=10)
+            cli("view", "off")
             assert poll_until(lambda: "[view: All]" in screen() and bool(inventory()))
-
             env.tmux(["select-pane", "-t", sidebar])
             env.tmux(["send-keys", "-t", sidebar, "V"])
             assert poll_until(lambda: "[view: Named sessions]" in screen())
 
-            cli("view", "--clear")
-            assert poll_until(lambda: "[view: Named sessions]" in screen())
-            cli("view", "Empty")
-            assert poll_until(lambda: "[view: Empty]" in screen() and not inventory())
-            # A removed selection falls back to All after live config reload.
+            # Automatic selection follows renamed and removed rules on reload.
             config.write_text(
-                config.read_text().replace("name: Empty", "name: Renamed")
+                config.read_text().replace("name: Named sessions", "name: Renamed")
             )
-            assert poll_until(
-                lambda: "[view: All]" in screen() and bool(inventory()), timeout=10
+            assert poll_until(lambda: "[view: Renamed]" in screen(), timeout=10)
+            config.write_text(
+                config.read_text().replace(
+                    "sessions: [test, foo, bar, xyz]", "sessions: [foo]"
+                )
             )
+            assert poll_until(lambda: "[view: Code]" in screen(), timeout=10)
             config.write_text("sidebar:\n  git_status: false\n")
             assert poll_until(
                 lambda: "[view:" not in screen() and bool(inventory()), timeout=10
             )
-            assert cli("view", "--list").stdout.strip() == "All"
+            cli("view", "off")
+            assert "[view:" not in screen()
         finally:
             cli("off")
 
@@ -254,26 +235,34 @@ def test_windows_choose_their_own_view(
                 == work_pane
             )
 
-            # V selects one shared view, even across windows with different rules.
+            # V toggles rules globally, not a shared named view.
             env.tmux(["select-pane", "-t", personal_sidebar])
             env.tmux(["send-keys", "-t", personal_sidebar, "V"])
             assert poll_until(
-                lambda: scope(personal_pane).get("name") == "Work"
-                and scope(work_pane).get("name") == "Work"
+                lambda: scope(personal_pane).get("name") == "All"
+                and scope(work_pane).get("name") == "All"
             )
-            assert scope(personal_pane)["pane_ids"] == [work_pane]
+            assert set(scope(personal_pane)["pane_ids"]) == {personal_pane, work_pane}
+            assert set(scope(work_pane)["pane_ids"]) == {personal_pane, work_pane}
             assert poll_until(
-                lambda: "[view: Work]" in screen(personal_sidebar).splitlines()[-1]
-                and "[view: Work]" in screen(work_sidebar).splitlines()[-1]
+                lambda: "[view: All]" in screen(personal_sidebar).splitlines()[-1]
+                and "[view: All]" in screen(work_sidebar).splitlines()[-1]
             )
 
-            # CLI choices are shared too; clearing restores each window's rules.
-            command(work_pane, "sidebar", "view", "Personal")
+            env.tmux(["select-pane", "-t", work_sidebar])
+            env.tmux(["send-keys", "-t", work_sidebar, "V"])
             assert poll_until(
-                lambda: scope(work_pane).get("name") == "Personal"
+                lambda: scope(work_pane).get("name") == "Work"
                 and scope(personal_pane).get("name") == "Personal"
             )
-            command(personal_pane, "sidebar", "view", "--clear")
+
+            # Explicit CLI on/off controls the same global mode.
+            command(work_pane, "sidebar", "view", "off")
+            assert poll_until(
+                lambda: scope(work_pane).get("name") == "All"
+                and scope(personal_pane).get("name") == "All"
+            )
+            command(personal_pane, "sidebar", "view", "on")
             assert poll_until(
                 lambda: scope(work_pane).get("name") == "Work"
                 and scope(personal_pane).get("name") == "Personal"

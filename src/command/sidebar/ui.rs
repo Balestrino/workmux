@@ -551,7 +551,7 @@ fn help_entries(app: &SidebarApp) -> Vec<(&'static str, &'static str)> {
         ("t", "grouping"),
         ("v", "layout"),
         ("f", "session filter"),
-        ("V", "next view"),
+        ("V", "views on/off"),
         ("z", "sleep"),
         ("q", "quit"),
     ]);

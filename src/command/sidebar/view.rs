@@ -1,4 +1,4 @@
-//! Automatic per-window views with a shared manual selection.
+//! Rule-based per-window views with a shared on/off toggle.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -7,11 +7,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, bail};
 
 use crate::cmd::Cmd;
-use crate::config::{Config, SidebarView};
+use crate::config::SidebarView;
 use crate::multiplexer::{AgentPane, LivePaneInfo};
 use serde::{Deserialize, Serialize};
 
-pub const OPTION: &str = "@workmux_sidebar_view_override";
+pub const OPTION: &str = "@workmux_sidebar_views_enabled";
 pub const SCOPE_OPTION: &str = "@workmux_sidebar_scope";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,53 +42,31 @@ pub fn read_scope(window: &str) -> Option<WindowView> {
     serde_json::from_str(&value).ok()
 }
 
-pub fn selected<'a>(views: &'a [SidebarView], name: Option<&str>) -> Option<&'a SidebarView> {
-    views.iter().find(|view| Some(view.name.as_str()) == name)
+/// Configured views are enabled unless the server has explicitly disabled them.
+pub fn is_enabled(value: Option<&str>) -> bool {
+    value.map(str::trim) != Some("off")
 }
 
-fn next_name<'a>(views: &'a [SidebarView], current: Option<&str>) -> &'a str {
-    match views
-        .iter()
-        .position(|view| Some(view.name.as_str()) == current)
-    {
-        Some(index) => views.get(index + 1),
-        None => views.first(),
-    }
-    .map_or("All", |view| view.name.as_str())
-}
-
-pub fn select(name: Option<&str>, list: bool, clear: bool) -> Result<()> {
-    let config = Config::load(None)?;
-    let views = config.sidebar.views.as_deref().unwrap_or_default();
-    if list {
-        println!("All");
-        for view in views {
-            println!("{}", view.name);
+pub fn set_enabled(mode: Option<&str>) -> Result<()> {
+    let enabled = match mode {
+        Some("on") => true,
+        Some("off") => false,
+        Some(mode) => bail!("invalid sidebar view mode {mode:?}; expected on or off"),
+        None => {
+            let current = Cmd::new("tmux")
+                .args(&["show-option", "-gqv", OPTION])
+                .run_and_capture_stdout()?;
+            !is_enabled(Some(&current))
         }
-        return Ok(());
-    }
-    if clear {
-        Cmd::new("tmux")
-            .args(&["set-option", "-gu", OPTION])
-            .run()?;
-    } else {
-        let scope = read_scope(&current_window()?);
-        let current = Cmd::new("tmux")
-            .args(&["show-option", "-gqv", OPTION])
-            .run_and_capture_stdout()?;
-        let current = if current.trim().is_empty() {
-            scope.as_ref().map_or("All", |scope| scope.name.as_str())
-        } else {
-            current.trim()
-        };
-        let name = name.unwrap_or_else(|| next_name(views, Some(current)));
-        if name != "All" && selected(views, Some(name)).is_none() {
-            bail!("unknown sidebar view {name:?}; use workmux sidebar view --list");
-        }
-        Cmd::new("tmux")
-            .args(&["set-option", "-g", OPTION, name])
-            .run()?;
-    }
+    };
+    Cmd::new("tmux")
+        .args(&[
+            "set-option",
+            "-g",
+            OPTION,
+            if enabled { "on" } else { "off" },
+        ])
+        .run()?;
     super::signal_daemon();
     Ok(())
 }
@@ -164,7 +142,7 @@ impl ProjectCache {
         agents: &[AgentPane],
         panes: &HashMap<String, LivePaneInfo>,
         active: &HashSet<String>,
-        view_override: Option<&str>,
+        enabled: bool,
     ) -> HashMap<String, WindowView> {
         if views.is_empty() {
             self.projects.clear();
@@ -227,8 +205,8 @@ impl ProjectCache {
                 if let Some(agent) = host {
                     self.hosts.insert(window.to_string(), agent.pane_id.clone());
                 }
-                let name = if let Some(name) = view_override {
-                    selected(views, Some(name)).map_or("All", |v| v.name.as_str())
+                let name = if !enabled {
+                    "All"
                 } else if let Some(agent) = host {
                     automatic_name(views, &agent.session, &projects[agent.pane_id.as_str()])
                 } else {
@@ -295,13 +273,13 @@ mod tests {
     }
 
     #[test]
-    fn order_and_missing_selection() {
-        let views = views();
-        assert_eq!(next_name(&views, None), "Named");
-        assert_eq!(next_name(&views, Some("Named")), "Code");
-        assert_eq!(next_name(&views, Some("Other")), "All");
-        assert_eq!(next_name(&[], None), "All");
-        assert!(selected(&views, Some("deleted")).is_none());
+    fn views_default_to_on_and_can_be_disabled() {
+        assert!(is_enabled(None));
+        assert!(is_enabled(Some("")));
+        assert!(is_enabled(Some("on")));
+        assert!(!is_enabled(Some("off")));
+        assert!(!is_enabled(Some("off\n")));
+        assert!(set_enabled(Some("Named")).is_err());
     }
 
     #[test]
@@ -438,7 +416,7 @@ mod tests {
             .collect();
         let mut cache = ProjectCache::default();
         let active = HashSet::from(["%1".into(), "%2".into()]);
-        let resolved = cache.window_views(&views, &agents, &panes, &active, None);
+        let resolved = cache.window_views(&views, &agents, &panes, &active, true);
         assert_eq!(resolved["@1"].name, "Named");
         assert_eq!(
             resolved["@1"].pane_ids,
@@ -449,37 +427,36 @@ mod tests {
 
         let active = HashSet::from(["%3".into()]);
         assert_eq!(
-            cache.window_views(&views, &agents, &panes, &active, None)["@2"].name,
+            cache.window_views(&views, &agents, &panes, &active, true)["@2"].name,
             "Named"
         );
         let inactive = HashSet::new();
         assert_eq!(
-            cache.window_views(&views, &agents, &panes, &inactive, None)["@2"].name,
+            cache.window_views(&views, &agents, &panes, &inactive, true)["@2"].name,
             "Named"
         );
 
-        let resolved = cache.window_views(&views, &agents, &panes, &inactive, Some("Other"));
-        assert_eq!(resolved["@1"].name, "Other");
-        assert_eq!(resolved["@2"].name, "Other");
-        assert_eq!(resolved["@1"].pane_ids, resolved["@2"].pane_ids);
-        let resolved = cache.window_views(&views, &agents, &panes, &inactive, Some("removed"));
+        let resolved = cache.window_views(&views, &agents, &panes, &inactive, false);
         assert_eq!(resolved["@1"].name, "All");
-        assert_eq!(resolved["@1"].pane_ids.len(), 3);
         assert_eq!(resolved["@2"].name, "All");
+        assert_eq!(resolved["@1"].pane_ids.len(), 3);
+        assert_eq!(resolved["@1"].pane_ids, resolved["@2"].pane_ids);
         let restored = cache.window_views(
             &views,
             &agents,
             &panes,
             &HashSet::from(["%1".into(), "%2".into()]),
-            None,
+            true,
         );
         assert_eq!(restored["@1"].name, "Named");
         assert_eq!(restored["@2"].name, "Other");
-        assert!(
-            cache
-                .window_views(&[], &agents, &panes, &inactive, Some("Other"))
-                .is_empty()
-        );
+        for enabled in [true, false] {
+            assert!(
+                cache
+                    .window_views(&[], &agents, &panes, &inactive, enabled)
+                    .is_empty()
+            );
+        }
     }
 
     #[test]
@@ -492,7 +469,7 @@ mod tests {
             &[],
             &panes,
             &HashSet::from(["%10".into()]),
-            None,
+            true,
         );
         assert_eq!(resolved["@1"].name, "Work");
         assert!(resolved["@1"].pane_ids.is_empty());
