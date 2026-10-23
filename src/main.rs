@@ -12,6 +12,7 @@ mod frozen_config;
 mod git;
 mod github;
 mod gitlab;
+mod jj;
 mod llm;
 mod logger;
 mod markdown;
