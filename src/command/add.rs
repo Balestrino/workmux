@@ -156,6 +156,10 @@ fn stdin_has_data(_stdin: &std::io::Stdin) -> Result<bool> {
 
 /// Check preconditions for the add command (git repo and multiplexer session).
 /// Returns Ok(()) if all preconditions are met, or an error listing all failures.
+fn is_jj_repo() -> Result<bool> {
+    crate::jj::detect(&git::get_main_worktree_root()?, &git::get_git_common_dir()?)
+}
+
 fn check_preconditions(headless: bool) -> Result<()> {
     let is_git = git::is_git_repo()?;
     let mux = create_backend(detect_backend());
@@ -579,9 +583,7 @@ pub fn run(
                 (generated, Some(prompt), None, false)
             }
         } else if let Some(pr_reference) = pr {
-            let main_root = git::get_main_worktree_root()?;
-            let common_dir = git::get_git_common_dir()?;
-            if crate::jj::detect(&main_root, &common_dir)? {
+            if is_jj_repo()? {
                 bail!(
                     "Creating a workspace from a pull request is not supported in jj repositories. \
                      Fetch with 'jj git fetch' and use --base <bookmark>@<remote> instead."
@@ -750,7 +752,9 @@ pub fn run(
         (Some(pr_remote.clone()), branch_name.to_string())
     } else if auto_name {
         (None, branch_name.to_string())
-    } else if dry_run {
+    } else if dry_run || is_jj_repo()? {
+        // jj repositories reject remote branches when creating the workspace,
+        // so detect them without fetching.
         detect_remote_branch_dry_run(branch_name, cli_base)?
     } else {
         detect_remote_branch(branch_name, cli_base)?
