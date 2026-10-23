@@ -120,6 +120,11 @@ New to worktrees? See [Why git worktrees?](#why-git-worktrees)
   status, manages worktrees by itself, and etc. It lives on an already existing
   tmux setup."* -
   [13hcoks on X](https://x.com/13hcoks/status/2080278051309355485)
+- *"workmux is fantastic. nothing too fancy, solves a real problem and stays in
+  TMUX ❤️"* -
+  [devopstoolbox on X](https://x.com/devopstoolbox/status/2094442083717390547)
+- *"Workmux is fantastic if you're mostly terminal bound."* -
+  [cody1786 on X](https://x.com/cody1786/status/2033959173361213870)
 - *"Want modern terminal workspace features without abandoning your setup?
   Here is how to keep Tmux and boost your workflow using Workmux."* -
   [Sam Natale on YouTube](https://www.youtube.com/watch?v=ww1wykxJps8)
