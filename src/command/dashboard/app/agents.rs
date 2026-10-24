@@ -1,7 +1,7 @@
 //! Agent list management, navigation, sorting, filtering, and display helpers.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -18,6 +18,7 @@ use super::super::settings::{load_last_pane_id, save_hide_stale, save_last_pane_
 use super::super::sort::SortMode;
 use super::super::spinner::SPINNER_FRAMES;
 use super::App;
+use super::worktrees::resolve_project_name;
 use crate::command::pane_history::pane_to_remember;
 
 /// Selected agent pane target for multiplexer operations.
@@ -516,6 +517,20 @@ impl App {
 
     pub fn extract_project_name(agent_pane: &AgentPane) -> String {
         agent::extract_project_name(&agent_pane.path)
+    }
+
+    /// Project name for a repository: the workspace-aware name when known,
+    /// otherwise derived from the path.
+    pub fn project_for(&self, repo_key: &Path, path: &Path) -> String {
+        resolve_project_name(&self.project_names, repo_key, path)
+    }
+
+    /// Project name shown for an agent pane.
+    pub fn agent_project(&self, agent_pane: &AgentPane) -> String {
+        match self.repo_keys.get(&agent_pane.path) {
+            Some(key) => self.project_for(key, &agent_pane.path),
+            None => Self::extract_project_name(agent_pane),
+        }
     }
 
     /// Get PR info for an agent by looking up its branch in PR statuses

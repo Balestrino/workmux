@@ -51,7 +51,7 @@ pub fn render_worktree_table(f: &mut Frame, app: &mut App, area: Rect) {
                 String::new()
             };
 
-            let project = agent::extract_project_name(&wt.path);
+            let project = app.project_for(&wt.repo_key, &wt.path);
 
             // Main worktree: show branch name (handle is just the repo dir name)
             // Other worktrees: show branch inline when it differs from the handle
@@ -366,6 +366,16 @@ pub fn render_worktree_preview(f: &mut Frame, app: &mut App, area: Rect) {
     render_git_log(f, app, chunks[1], selected_worktree);
 }
 
+/// Title of the info panel. A main checkout's handle is just the repository
+/// directory name, so it is shown as `project · branch`.
+fn info_title(wt: &crate::workflow::types::WorktreeInfo, project: &str) -> String {
+    if wt.is_main {
+        format!(" {} \u{b7} {} ", project, wt.branch)
+    } else {
+        format!(" {} ", wt.handle)
+    }
+}
+
 /// Render the info panel showing worktree metadata.
 fn render_info_panel(
     f: &mut Frame,
@@ -377,7 +387,7 @@ fn render_info_panel(
     let text_style = Style::default().fg(app.palette.text);
 
     let title = if let Some(wt) = worktree {
-        format!(" {} ", wt.handle)
+        info_title(wt, &app.project_for(&wt.repo_key, &wt.path))
     } else {
         " Info ".to_string()
     };
@@ -684,6 +694,27 @@ mod tests {
             .unwrap();
         assert_eq!(state.selected(), selected);
         terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn info_title_for_main_checkout() {
+        let mut wt = crate::workflow::types::WorktreeInfo {
+            repo_key: "k/.git".into(),
+            handle: "primary-clone".into(),
+            branch: "dev".into(),
+            path: "/ws/alpha/primary-clone".into(),
+            is_main: true,
+            mode: crate::config::MuxMode::Window,
+            has_mux_window: false,
+            has_unmerged: false,
+            pr_info: None,
+            agent_status: None,
+            created_at: None,
+            base_branch: None,
+        };
+        assert!(info_title(&wt, "alpha").contains("alpha \u{b7} dev"));
+        wt.is_main = false;
+        assert_eq!(info_title(&wt, "alpha"), " primary-clone ");
     }
 
     fn line(buffer: &Buffer, y: u16) -> String {

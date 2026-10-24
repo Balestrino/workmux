@@ -1,5 +1,6 @@
 //! Worktree tab: navigation, removal, sweep, project picker, and preview.
 
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,12 +11,132 @@ use anyhow::Context as _;
 
 use crate::git;
 use crate::multiplexer::Multiplexer;
+use crate::util::canon_or_self;
 use crate::workflow;
+use crate::workspaces::{self, WorkspaceRepo};
 
 use super::super::agent;
 use super::super::sort::WorktreeSortMode;
 use super::App;
 use super::types::*;
+
+/// Project name for a repository: the name computed for its repository key,
+/// else derived from the path.
+pub(super) fn resolve_project_name(
+    names: &HashMap<PathBuf, String>,
+    repo_key: &Path,
+    path: &Path,
+) -> String {
+    names
+        .get(repo_key)
+        .cloned()
+        .unwrap_or_else(|| agent::extract_project_name(path))
+}
+
+/// Repository roots to list: discovered workspace repositories plus the
+/// roots of repositories that have agents, deduplicated by canonical path.
+fn fetch_roots(workspace_repos: &[WorkspaceRepo], agent_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    workspace_repos
+        .iter()
+        .map(|r| &r.main_root)
+        .chain(agent_roots)
+        .filter(|root| seen.insert(canon_or_self(root)))
+        .cloned()
+        .collect()
+}
+
+/// Worktrees of every repository in `roots`. A root that cannot be listed
+/// (not a repository any more, broken config) is skipped.
+fn list_all_repos(
+    config: &crate::config::Config,
+    mux: &dyn Multiplexer,
+    roots: &[PathBuf],
+) -> Vec<workflow::types::WorktreeInfo> {
+    let mut seen_keys = HashSet::new();
+    let mut all = Vec::new();
+    for root in roots {
+        let root_config = crate::config::Config::load_with_location_from(root, None)
+            .map(|(c, _)| c)
+            .unwrap_or_else(|_| config.clone());
+        let Ok(list) = workflow::list_in(&root_config, mux, false, &[], Some(root)) else {
+            continue;
+        };
+        if let Some(first) = list.first()
+            && !seen_keys.insert(first.repo_key.clone())
+        {
+            continue;
+        }
+        all.extend(list);
+    }
+    all
+}
+
+/// Project names keyed by repository key. All main checkouts are named in a
+/// single pass so repositories sharing a first path component are told apart.
+fn names_by_repo_key(
+    workspace_dirs: &[PathBuf],
+    worktrees: &[workflow::types::WorktreeInfo],
+) -> HashMap<PathBuf, String> {
+    let mut main_roots: BTreeMap<&PathBuf, &PathBuf> = BTreeMap::new();
+    for wt in worktrees {
+        let entry = main_roots.entry(&wt.repo_key).or_insert(&wt.path);
+        if wt.is_main {
+            *entry = &wt.path;
+        }
+    }
+    let roots: Vec<PathBuf> = main_roots.values().map(|p| (*p).clone()).collect();
+    let by_root = workspaces::project_names(workspace_dirs, &roots);
+    main_roots
+        .into_iter()
+        .filter_map(|(key, root)| {
+            by_root
+                .get(&canon_or_self(root))
+                .map(|name| (key.clone(), name.clone()))
+        })
+        .collect()
+}
+
+/// Picker entries for `(repo_key, main_root)` pairs, one per repository,
+/// sorted by name. With workspaces configured "All projects" comes first.
+fn project_entries(
+    workspace_dirs: &[PathBuf],
+    repos: Vec<(PathBuf, PathBuf)>,
+) -> Vec<ProjectEntry> {
+    let mut seen = HashSet::new();
+    let repos: Vec<(PathBuf, PathBuf)> = repos
+        .into_iter()
+        .filter(|(key, _)| seen.insert(key.clone()))
+        .collect();
+    let roots: Vec<PathBuf> = repos.iter().map(|(_, root)| root.clone()).collect();
+    let names = workspaces::project_names(workspace_dirs, &roots);
+
+    let mut entries: Vec<ProjectEntry> = repos
+        .into_iter()
+        .map(|(key, root)| ProjectEntry {
+            name: names
+                .get(&canon_or_self(&root))
+                .cloned()
+                .unwrap_or_else(|| agent::extract_project_name(&root)),
+            path: root,
+            repo_key: Some(key),
+        })
+        .collect();
+    entries.sort_by(|a, b| a.name.cmp(&b.name).then(a.path.cmp(&b.path)));
+    if !workspace_dirs.is_empty() {
+        entries.insert(
+            0,
+            ProjectEntry {
+                name: ALL_PROJECTS.to_string(),
+                path: PathBuf::new(),
+                repo_key: None,
+            },
+        );
+    }
+    entries
+}
+
+const ALL_PROJECTS: &str = "All projects";
 
 fn merge_worktree_prs(
     worktrees: &mut [workflow::types::WorktreeInfo],
@@ -242,6 +363,8 @@ impl App {
             .worktree_project_override
             .as_ref()
             .map(|(_, p)| p.clone());
+        let workspace_dirs = self.config.dashboard.workspaces();
+        let agent_roots: Vec<PathBuf> = self.repo_roots.values().cloned().collect();
 
         std::thread::spawn(move || {
             struct ResetFlag(Arc<AtomicBool>);
@@ -254,10 +377,16 @@ impl App {
 
             // fetch_pr_status=false: the dashboard fetches PR status separately,
             // and workflow::list's spinner would corrupt the TUI output
-            if let Ok(worktrees) =
-                workflow::list_in(&config, mux.as_ref(), false, &[], repo_override.as_deref())
-            {
-                let _ = tx.send(AppEvent::WorktreeList(worktrees));
+            let worktrees = if workspace_dirs.is_empty() || repo_override.is_some() {
+                workflow::list_in(&config, mux.as_ref(), false, &[], repo_override.as_deref()).ok()
+            } else {
+                let repos = workspaces::discover_repos(&workspace_dirs);
+                let roots = fetch_roots(&repos, &agent_roots);
+                Some(list_all_repos(&config, mux.as_ref(), &roots))
+            };
+            if let Some(worktrees) = worktrees {
+                let names = names_by_repo_key(&workspace_dirs, &worktrees);
+                let _ = tx.send(AppEvent::WorktreeList(worktrees, names));
             }
         });
     }
@@ -691,29 +820,26 @@ impl App {
 
     /// Discover projects from cached repo roots and open the picker modal.
     pub fn show_project_picker(&mut self) {
-        // Deduplicate by project name, keeping one representative path per project
-        let mut by_name: std::collections::BTreeMap<String, PathBuf> =
-            std::collections::BTreeMap::new();
-
-        for root in self.repo_roots.values() {
-            let name = agent::extract_project_name(root);
-            by_name.entry(name).or_insert_with(|| root.clone());
-        }
-
-        let projects: Vec<ProjectEntry> = by_name
+        let workspace_dirs = self.config.dashboard.workspaces();
+        let mut repos: Vec<(PathBuf, PathBuf)> = workspaces::discover_repos(&workspace_dirs)
             .into_iter()
-            .map(|(name, path)| ProjectEntry { name, path })
+            .map(|r| (r.repo_key, r.main_root))
             .collect();
+        for (agent_path, root) in &self.repo_roots {
+            if let Some(key) = self.repo_keys.get(agent_path) {
+                repos.push((key.clone(), root.clone()));
+            }
+        }
+        let projects = project_entries(&workspace_dirs, repos);
 
-        let current_name = self
-            .worktree_project_override
-            .as_ref()
-            .map(|(name, _)| name.clone())
-            .or_else(|| {
-                self.current_worktree
-                    .as_deref()
-                    .map(agent::extract_project_name)
-            });
+        let current_name = match &self.worktree_project_override {
+            Some((name, _)) => Some(name.clone()),
+            None if !workspace_dirs.is_empty() => Some(ALL_PROJECTS.to_string()),
+            None => self
+                .current_worktree
+                .as_deref()
+                .map(agent::extract_project_name),
+        };
 
         let initial_cursor = current_name
             .as_ref()
@@ -772,7 +898,10 @@ impl App {
         };
         let selected = &picker.projects[idx];
 
-        self.worktree_project_override = Some((selected.name.clone(), selected.path.clone()));
+        self.worktree_project_override = selected
+            .repo_key
+            .as_ref()
+            .map(|_| (selected.name.clone(), selected.path.clone()));
         self.worktrees.clear();
         self.all_worktrees.clear();
         self.last_worktree_fetch = std::time::Instant::now();
@@ -1406,6 +1535,90 @@ mod tests {
             created_at: None,
             base_branch: None,
         }
+    }
+
+    fn repo(key: &str, root: &str) -> WorkspaceRepo {
+        WorkspaceRepo {
+            repo_key: key.into(),
+            main_root: root.into(),
+            project: String::new(),
+        }
+    }
+
+    #[test]
+    fn fetch_roots_dedupes_by_canonical_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let repos = vec![repo("a/.git", a.to_str().unwrap())];
+        let agent_roots = vec![a.join("../a"), b.clone()];
+        assert_eq!(fetch_roots(&repos, &agent_roots), vec![a, b]);
+    }
+
+    #[test]
+    fn project_picker_keeps_same_named_repos_apart() {
+        let ws = vec![PathBuf::from("/nonexistent-ws")];
+        let entries = project_entries(
+            &ws,
+            vec![
+                ("/x/a/.git".into(), "/x/a/primary-clone".into()),
+                ("/x/b/.git".into(), "/x/b/primary-clone".into()),
+                ("/x/a/.git".into(), "/x/a/primary-clone".into()),
+            ],
+        );
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].name, "All projects");
+        assert!(entries[0].repo_key.is_none());
+        assert_eq!(entries[1].name, entries[2].name);
+        assert_ne!(entries[1].path, entries[2].path);
+    }
+
+    #[test]
+    fn project_picker_has_no_all_entry_without_workspaces() {
+        let entries = project_entries(&[], vec![("/x/a/.git".into(), "/x/a/proj".into())]);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].repo_key.is_some());
+    }
+
+    #[test]
+    fn names_by_repo_key_uses_workspace_relative_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().canonicalize().unwrap();
+        let a = ws.join("cross/commons");
+        let b = ws.join("cross/hermes");
+        let c = ws.join("solo/primary-clone");
+        let mut list = Vec::new();
+        for (root, key) in [(&a, "ka"), (&b, "kb"), (&c, "kc")] {
+            std::fs::create_dir_all(root).unwrap();
+            let mut main = worktree("x", "main", true);
+            main.repo_key = key.into();
+            main.path = root.clone();
+            let mut other = worktree("x", "feat", false);
+            other.repo_key = key.into();
+            list.push(other);
+            list.push(main);
+        }
+        let names = names_by_repo_key(&[ws], &list);
+        assert_eq!(names[Path::new("ka")], "cross/commons");
+        assert_eq!(names[Path::new("kb")], "cross/hermes");
+        assert_eq!(names[Path::new("kc")], "solo");
+    }
+
+    #[test]
+    fn worktree_table_uses_project_map() {
+        let mut names = HashMap::new();
+        names.insert(PathBuf::from("k/.git"), "alpha".to_string());
+        let wt = worktree("k", "main", true);
+        assert_eq!(
+            resolve_project_name(&names, Path::new("k/.git"), &wt.path),
+            "alpha"
+        );
+        assert_eq!(
+            resolve_project_name(&names, Path::new("other"), Path::new("/x/proj")),
+            agent::extract_project_name(Path::new("/x/proj"))
+        );
     }
 
     fn pr(number: u32) -> PrSummary {

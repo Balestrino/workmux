@@ -47,7 +47,8 @@ impl App {
                     self.apply_worktree_filters();
                 }
             }
-            AppEvent::WorktreeList(mut worktrees) => {
+            AppEvent::WorktreeList(mut worktrees, names) => {
+                self.project_names = names;
                 self.removals.filter_snapshot(&mut worktrees);
                 let needs_pr_fetch = self.all_worktrees.is_empty() && !worktrees.is_empty();
                 self.all_worktrees = worktrees;

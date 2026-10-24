@@ -1,9 +1,6 @@
 //! Discovery of git repositories under configured workspace directories, and
 //! the project names used to label them.
 
-// Task 3 wires these into the dashboard; until then the binary does not call them.
-#![allow(dead_code)]
-
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 

@@ -457,7 +457,6 @@ impl DashboardConfig {
     }
 
     /// Workspace directories with `~` expanded. Empty when unset.
-    #[allow(dead_code)] // consumed by the dashboard workspace/provider code
     pub fn workspaces(&self) -> Vec<PathBuf> {
         self.workspaces
             .as_deref()

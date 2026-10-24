@@ -20,7 +20,7 @@ pub enum AppEvent {
     /// GitHub status update for a repo root
     GithubStatus(PathBuf, HashMap<String, BranchSummary>),
     /// Full worktree list from background fetch
-    WorktreeList(Vec<WorktreeInfo>),
+    WorktreeList(Vec<WorktreeInfo>, HashMap<PathBuf, String>),
     /// Git log preview for a worktree path
     WorktreeLog(PathBuf, String),
     /// Result of a confirmed background removal.
@@ -121,6 +121,8 @@ pub struct SweepProgress {
 pub struct ProjectEntry {
     pub name: String,
     pub path: PathBuf,
+    /// Repository key; `None` is the "All projects" entry.
+    pub repo_key: Option<PathBuf>,
 }
 
 /// State for the project picker modal.

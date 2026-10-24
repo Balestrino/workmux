@@ -394,7 +394,7 @@ fn render_table(f: &mut Frame, app: &mut App, area: Rect) {
                 String::new()
             };
 
-            let project = App::extract_project_name(agent);
+            let project = app.agent_project(agent);
             let (worktree_name, is_main) = app.extract_worktree_name(agent);
             // Check if this agent corresponds to the current working directory.
             // Try canonicalized comparison first (handles symlinks), fall back to direct comparison.

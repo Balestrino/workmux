@@ -90,6 +90,8 @@ pub struct App {
     repo_roots: HashMap<PathBuf, PathBuf>,
     /// Common Git directory keys for agent paths, separate from checkout roots.
     repo_keys: HashMap<PathBuf, PathBuf>,
+    /// Project display names keyed by repository key (from the last worktree fetch).
+    pub project_names: HashMap<PathBuf, String>,
     /// Frame counter for spinner animation (increments each tick)
     pub spinner_frame: u8,
     /// Whether to hide stale agents from the list
@@ -257,6 +259,7 @@ impl App {
             event_tx,
             repo_roots: HashMap::new(),
             repo_keys: HashMap::new(),
+            project_names: HashMap::new(),
             spinner_frame: 0,
             hide_stale,
             show_help: false,
