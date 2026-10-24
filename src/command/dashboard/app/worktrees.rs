@@ -355,6 +355,23 @@ fn run_add_worktree_job(
     }
 }
 
+/// Pick the repository an action targets: the project override, else (in all
+/// mode) the selected row, else the dashboard's current worktree, else the
+/// first listed row.
+fn choose_repo_path(
+    override_path: Option<&PathBuf>,
+    all_mode: bool,
+    selected_row_path: Option<PathBuf>,
+    current: Option<PathBuf>,
+    first_row_path: Option<PathBuf>,
+) -> Option<PathBuf> {
+    override_path
+        .cloned()
+        .or_else(|| selected_row_path.filter(|_| all_mode))
+        .or(current)
+        .or(first_row_path)
+}
+
 fn remove_worktree(
     handle: &str,
     path: &Path,
@@ -719,14 +736,15 @@ impl App {
 
         let prefix = self.config.window_prefix();
         if worktree.mode == crate::config::MuxMode::Window {
-            let target_name = crate::git::get_worktree_target_window(&worktree.handle)
+            let repo = Some(worktree.path.as_path());
+            let target_name = crate::git::get_worktree_target_window_in(&worktree.handle, repo)
                 .unwrap_or_else(|| worktree.handle.clone());
             let full_name = crate::multiplexer::util::prefixed(prefix, &target_name);
-            let parent_session = crate::git::get_worktree_window_session(&worktree.handle);
+            let parent_session = crate::git::get_worktree_window_session_in(&worktree.handle, repo);
             let window_token = self
                 .mux
                 .supports_window_ownership()
-                .then(|| crate::git::get_worktree_window_token(&worktree.handle))
+                .then(|| crate::git::get_worktree_window_token_in(&worktree.handle, repo))
                 .flatten();
             let target = if let Some(token) = window_token {
                 self.mux
@@ -753,8 +771,11 @@ impl App {
                 let _ = self.mux.kill_window_target(&target);
             }
         } else {
-            let target_name = crate::git::get_worktree_target_session(&worktree.handle)
-                .unwrap_or_else(|| worktree.handle.clone());
+            let target_name = crate::git::get_worktree_target_session_in(
+                &worktree.handle,
+                Some(worktree.path.as_path()),
+            )
+            .unwrap_or_else(|| worktree.handle.clone());
             let full_name = crate::multiplexer::util::prefixed(prefix, &target_name);
             let _ = crate::multiplexer::handle::MuxHandle::kill_full(
                 self.mux.as_ref(),
@@ -774,7 +795,14 @@ impl App {
             self.spawn_worktree_fetch();
         }
 
-        let gone = git::get_gone_branches().unwrap_or_default();
+        // Resolve gone branches per repository: rows may span several repos.
+        let mut gone_by_repo: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+        for wt in &self.worktrees {
+            gone_by_repo
+                .entry(wt.repo_key.clone())
+                .or_insert_with(|| git::get_gone_branches_in(Some(&wt.path)).unwrap_or_default());
+        }
+        let no_gone = HashSet::new();
 
         let mut candidates: Vec<SweepCandidate> = Vec::new();
 
@@ -783,6 +811,7 @@ impl App {
                 continue;
             }
 
+            let gone = gone_by_repo.get(&wt.repo_key).unwrap_or(&no_gone);
             let status = self.git_statuses.get(&wt.path);
             let is_dirty = status.is_some_and(|s| s.is_dirty);
             let has_upstream = status.is_some_and(|s| s.has_upstream);
@@ -1163,7 +1192,14 @@ impl App {
 
         let handle = worktree.handle.clone();
 
-        let Ok(ctx) = workflow::WorkflowContext::new(self.config.clone(), self.mux.clone(), None)
+        // Act in the row's repository, not the dashboard's cwd.
+        let Ok((config, location)) =
+            crate::config::Config::load_with_location_from(&worktree.path, None)
+        else {
+            return;
+        };
+        let Ok(ctx) =
+            workflow::WorkflowContext::new_in(&worktree.path, config, self.mux.clone(), location)
         else {
             return;
         };
@@ -1207,11 +1243,19 @@ impl App {
 
     /// Get the repo path for the current worktree view context.
     fn worktree_repo_path(&self) -> Option<PathBuf> {
-        self.worktree_project_override
-            .as_ref()
-            .map(|(_, p)| p.clone())
-            .or_else(|| self.current_worktree.clone())
-            .or_else(|| self.worktrees.first().map(|w| w.path.clone()))
+        let all_mode = !self.config.dashboard.workspaces().is_empty();
+        let selected_row_path = self
+            .worktree_table_state
+            .selected()
+            .and_then(|i| self.worktrees.get(i))
+            .map(|w| w.path.clone());
+        choose_repo_path(
+            self.worktree_project_override.as_ref().map(|(_, p)| p),
+            all_mode,
+            selected_row_path,
+            self.current_worktree.clone(),
+            self.worktrees.first().map(|w| w.path.clone()),
+        )
     }
 
     /// Open the add-worktree modal with unified picker (branches pre-fetched).
@@ -1629,6 +1673,29 @@ mod tests {
             main_root: root.into(),
             project: String::new(),
         }
+    }
+
+    #[test]
+    fn repo_path_follows_selected_row_in_all_mode() {
+        let b = PathBuf::from("/b/wt");
+        let a = PathBuf::from("/a");
+        let ov = PathBuf::from("/o");
+        assert_eq!(
+            choose_repo_path(None, true, Some(b.clone()), Some(a.clone()), None),
+            Some(b.clone())
+        );
+        assert_eq!(
+            choose_repo_path(None, false, Some(b.clone()), Some(a.clone()), None),
+            Some(a.clone())
+        );
+        assert_eq!(
+            choose_repo_path(Some(&ov), true, Some(b), Some(a.clone()), None),
+            Some(ov)
+        );
+        assert_eq!(
+            choose_repo_path(None, true, None, Some(a.clone()), None),
+            Some(a)
+        );
     }
 
     #[test]

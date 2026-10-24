@@ -306,7 +306,17 @@ pub fn get_branch_for_worktree(worktree_path: &Path) -> Result<String> {
 
 /// Get a set of branches whose upstream remote-tracking branch has been deleted.
 pub fn get_gone_branches() -> Result<HashSet<String>> {
-    let output = Cmd::new("git")
+    get_gone_branches_in(None)
+}
+
+/// Like [`get_gone_branches`], for the repository containing `workdir`.
+pub fn get_gone_branches_in(workdir: Option<&Path>) -> Result<HashSet<String>> {
+    let cmd = Cmd::new("git");
+    let cmd = match workdir {
+        Some(path) => cmd.workdir(path),
+        None => cmd,
+    };
+    let output = cmd
         .args(&[
             "for-each-ref",
             "--format=%(refname:short)|%(upstream:track)",
