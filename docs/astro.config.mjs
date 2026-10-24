@@ -4,7 +4,7 @@ import starlight from "@astrojs/starlight";
 import starlightLinksValidator from "starlight-links-validator";
 import starlightLlmsTxt from "starlight-llms-txt";
 
-const site = "https://workmux.raine.dev";
+const site = "https://workmux.dev";
 const socialImage = `${site}/social-preview.png`;
 
 export default defineConfig({
