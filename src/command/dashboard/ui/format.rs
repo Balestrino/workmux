@@ -442,6 +442,14 @@ pub fn calc_column_width(items: &[String], min: usize, max: usize, padding: usiz
         .saturating_add(padding) as u16
 }
 
+/// Upper bound for the `project` cell.
+///
+/// Narrow panes keep the historical cap of 20; wider panes leave room for
+/// longer names such as `group/repository` paths instead of cutting them off.
+pub fn project_width_budget(area_width: u16) -> usize {
+    (area_width as usize / 5).clamp(20, 40)
+}
+
 /// Color elapsed time by age without using the destructive-action color.
 pub(crate) fn elapsed_time_style(secs: Option<u64>, palette: &ThemePalette) -> Style {
     match secs {
@@ -500,6 +508,17 @@ mod tests {
     use super::*;
     use crate::config::{ThemeMode, ThemeScheme};
     use crate::github::ClosingIssue;
+
+    #[test]
+    fn project_width_budget_scales_with_the_pane() {
+        // Narrow panes keep the historical cap of 20.
+        assert_eq!(project_width_budget(80), 20);
+        assert_eq!(project_width_budget(100), 20);
+        // Wider panes fit longer names such as group/repository paths.
+        assert_eq!(project_width_budget(150), 30);
+        assert_eq!(project_width_budget(200), 40);
+        assert_eq!(project_width_budget(400), 40);
+    }
 
     #[test]
     fn pr_issues_qualify_only_external_repositories() {

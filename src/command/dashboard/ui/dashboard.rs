@@ -478,7 +478,12 @@ fn render_table(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Calculate max project name width (with padding, capped)
     let project_names: Vec<String> = row_data.iter().map(|r| r.project.clone()).collect();
-    let max_project_width = format::calc_column_width(&project_names, 5, 20, 2);
+    let max_project_width = format::calc_column_width(
+        &project_names,
+        5,
+        format::project_width_budget(area.width),
+        2,
+    );
 
     // Calculate max worktree name width (with padding, capped)
     // Use at least 8 to fit the "Worktree" header, at most 25 to keep layout compact

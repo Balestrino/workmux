@@ -171,6 +171,7 @@ pub fn render_worktree_table(f: &mut Frame, app: &mut App, area: Rect) {
         &columns,
         row_data,
         worktree_max_width,
+        format::project_width_budget(area.width),
         format::ResourceHeaderState {
             palette: &app.palette,
             spinner_frame: app.spinner_frame,
@@ -369,6 +370,7 @@ fn build_worktree_table(
     columns: &[WorktreeColumn],
     row_data: Vec<WorktreeRowData>,
     worktree_max_width: usize,
+    project_max_width: usize,
     header_state: format::ResourceHeaderState<'_>,
 ) -> Table<'static> {
     let palette = header_state.palette;
@@ -390,7 +392,7 @@ fn build_worktree_table(
         .collect();
 
     let project_names: Vec<String> = row_data.iter().map(|r| r.project.clone()).collect();
-    let max_project_width = format::calc_column_width(&project_names, 5, 20, 2);
+    let max_project_width = format::calc_column_width(&project_names, 5, project_max_width, 2);
     let worktree_names: Vec<String> = row_data
         .iter()
         .map(|r| r.worktree_display.clone())
@@ -986,6 +988,7 @@ mod tests {
             columns,
             rows,
             worktree_width_budget(width),
+            format::project_width_budget(width),
             format::ResourceHeaderState {
                 palette: &palette,
                 spinner_frame: 0,
@@ -1205,6 +1208,19 @@ mod tests {
         assert_eq!(worktree_width_budget(120), 60);
         assert_eq!(worktree_width_budget(200), 80);
         assert_eq!(worktree_width_budget(400), 80);
+    }
+
+    #[test]
+    fn project_column_fits_a_long_name_in_a_wide_pane() {
+        let long = "group-of-repos/repository";
+        let mut r = row();
+        r.project = long.into();
+        let buffer = render(&[WorktreeColumn::Project], vec![r], 200, None);
+        assert!(
+            line(&buffer, 1).contains(long),
+            "long project name should survive in a wide pane, got {:?}",
+            line(&buffer, 1)
+        );
     }
 
     #[test]
