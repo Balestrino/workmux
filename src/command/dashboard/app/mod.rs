@@ -36,6 +36,7 @@ const PR_FETCH_INTERVAL: Duration = Duration::from_secs(30);
 use super::scope::ScopeMode;
 use super::settings::{load_hide_stale, load_last_pane_id, load_preview_size};
 use super::sort::{SortMode, WorktreeSortMode};
+use super::worktree_info::{InfoIndex, InfoReport};
 
 /// App state for the TUI
 pub struct App {
@@ -97,6 +98,14 @@ pub struct App {
     last_project_names_fetch: std::time::Instant,
     project_names_roots_len: Option<usize>,
     is_project_names_fetching: Arc<AtomicBool>,
+    /// Last good report from the external worktree info provider.
+    pub worktree_info: Option<InfoReport>,
+    /// `worktree_info` indexed by canonical path against the listed worktrees.
+    pub worktree_info_index: InfoIndex,
+    /// Error from the most recent failed provider run (cleared on success).
+    pub worktree_info_error: Option<String>,
+    is_info_fetching: Arc<AtomicBool>,
+    last_info_fetch: Option<std::time::Instant>,
     /// Frame counter for spinner animation (increments each tick)
     pub spinner_frame: u8,
     /// Whether to hide stale agents from the list
@@ -268,6 +277,11 @@ impl App {
             last_project_names_fetch: std::time::Instant::now(),
             project_names_roots_len: None,
             is_project_names_fetching: Arc::new(AtomicBool::new(false)),
+            worktree_info: None,
+            worktree_info_index: InfoIndex::default(),
+            worktree_info_error: None,
+            is_info_fetching: Arc::new(AtomicBool::new(false)),
+            last_info_fetch: None,
             spinner_frame: 0,
             hide_stale,
             show_help: false,
@@ -390,6 +404,7 @@ impl App {
         }
 
         self.maybe_spawn_project_names_fetch();
+        self.maybe_spawn_worktree_info_fetch();
 
         // Apply session scope filter after caching repo roots
         self.scope_mode

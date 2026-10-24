@@ -467,7 +467,6 @@ impl DashboardConfig {
     }
 
     /// Worktree info provider command. A blank string means none.
-    #[allow(dead_code)] // consumed by the dashboard workspace/provider code
     pub fn worktree_info_command(&self) -> Option<&str> {
         self.worktree_info_command
             .as_deref()
@@ -476,7 +475,6 @@ impl DashboardConfig {
 
     /// Refresh interval of the worktree info provider.
     /// Default: 15 seconds, minimum 2 seconds.
-    #[allow(dead_code)] // consumed by the dashboard workspace/provider code
     pub fn worktree_info_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.worktree_info_interval.unwrap_or(15).max(2))
     }

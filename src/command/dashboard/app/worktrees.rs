@@ -17,6 +17,7 @@ use crate::workspaces::{self, WorkspaceRepo};
 
 use super::super::agent;
 use super::super::sort::WorktreeSortMode;
+use super::super::worktree_info;
 use super::App;
 use super::types::*;
 
@@ -411,7 +412,60 @@ impl App {
             // Trigger immediate fetch on switch
             self.last_worktree_fetch = std::time::Instant::now();
             self.spawn_worktree_fetch();
+            // First time the tab is shown: do not wait for the interval.
+            self.maybe_spawn_worktree_info_fetch();
         }
+    }
+
+    /// Run the external info provider when configured and due (first run, or
+    /// the configured interval elapsed). At most one run at a time; the run
+    /// happens on a background thread and never blocks the UI.
+    pub(super) fn maybe_spawn_worktree_info_fetch(&mut self) {
+        let Some(command) = self
+            .config
+            .dashboard
+            .worktree_info_command()
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        let due = self
+            .last_info_fetch
+            .is_none_or(|t| t.elapsed() >= self.config.dashboard.worktree_info_interval());
+        if !due {
+            return;
+        }
+        if self
+            .is_info_fetching
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+        self.last_info_fetch = Some(std::time::Instant::now());
+        let tx = self.event_tx.clone();
+        let is_fetching = self.is_info_fetching.clone();
+        std::thread::spawn(move || {
+            struct ResetFlag(Arc<AtomicBool>);
+            impl Drop for ResetFlag {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::SeqCst);
+                }
+            }
+            let _reset = ResetFlag(is_fetching);
+            let result = worktree_info::run_provider(&command, worktree_info::PROVIDER_TIMEOUT)
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(AppEvent::WorktreeInfo(result));
+        });
+    }
+
+    /// Rebuild the path index from the last good report and the listed worktrees.
+    pub fn reindex_worktree_info(&mut self) {
+        let Some(report) = &self.worktree_info else {
+            return;
+        };
+        let known: Vec<PathBuf> = self.all_worktrees.iter().map(|w| w.path.clone()).collect();
+        self.worktree_info_index = worktree_info::index_report(report, &known);
     }
 
     /// Spawn background thread to fetch worktree list

@@ -52,6 +52,7 @@ impl App {
                 self.removals.filter_snapshot(&mut worktrees);
                 let needs_pr_fetch = self.all_worktrees.is_empty() && !worktrees.is_empty();
                 self.all_worktrees = worktrees;
+                self.reindex_worktree_info();
                 self.apply_worktree_filters();
 
                 // Force a PR re-fetch on initial load or after project switch
@@ -59,6 +60,17 @@ impl App {
                 if needs_pr_fetch {
                     self.last_pr_fetch = std::time::Instant::now() - super::PR_FETCH_INTERVAL;
                 }
+            }
+            AppEvent::WorktreeInfo(result) => {
+                match result {
+                    Ok(report) => {
+                        self.worktree_info = Some(report);
+                        self.worktree_info_error = None;
+                    }
+                    // Keep the last good report on failure.
+                    Err(e) => self.worktree_info_error = Some(e),
+                }
+                self.reindex_worktree_info();
             }
             AppEvent::ProjectNames(names) => {
                 self.project_names = names;

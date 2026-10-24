@@ -37,6 +37,7 @@ mod settings;
 mod sort;
 pub mod spinner;
 pub mod ui;
+mod worktree_info;
 pub use app::DashboardTab;
 
 use anyhow::Result;
