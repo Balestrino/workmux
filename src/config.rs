@@ -272,7 +272,7 @@ pub struct DashboardConfig {
     pub agent_columns: Option<Vec<AgentColumn>>,
 
     /// Columns of the worktree table, in display order. Omit a column to hide it.
-    /// Default: number, project, worktree, git, pr, mux, age, agent.
+    /// Default: number, project, worktree, git, pr, env, mux, age, agent.
     pub worktree_columns: Option<Vec<WorktreeColumn>>,
 
     /// Default sort mode for the agent list: "priority", "project", "recency", "natural".
@@ -284,6 +284,18 @@ pub struct DashboardConfig {
     /// Close the dashboard after jumping to an agent or worktree.
     /// Default: true.
     pub close_on_jump: Option<bool>,
+
+    /// Directories whose immediate subdirectories that are git repositories
+    /// are all shown in the dashboard. `~` is expanded. Global-only.
+    pub workspaces: Option<Vec<String>>,
+
+    /// Shell command printing per-worktree environment info as JSON, used to
+    /// fill the `env` column. Blank means disabled. Global-only.
+    pub worktree_info_command: Option<String>,
+
+    /// Seconds between runs of `worktree_info_command` (default 15, minimum 2).
+    /// Global-only.
+    pub worktree_info_interval: Option<u64>,
 }
 
 /// Arrangement of the dashboard table and preview.
@@ -351,18 +363,21 @@ pub enum WorktreeColumn {
     Pr,
     PrTitle,
     PrIssues,
+    /// Environment info reported by `dashboard.worktree_info_command`.
+    Env,
     Mux,
     Age,
     Agent,
 }
 
 /// Columns used when the config does not set `dashboard.worktree_columns`.
-pub const DEFAULT_WORKTREE_COLUMNS: [WorktreeColumn; 8] = [
+pub const DEFAULT_WORKTREE_COLUMNS: [WorktreeColumn; 9] = [
     WorktreeColumn::Number,
     WorktreeColumn::Project,
     WorktreeColumn::Worktree,
     WorktreeColumn::Git,
     WorktreeColumn::Pr,
+    WorktreeColumn::Env,
     WorktreeColumn::Mux,
     WorktreeColumn::Age,
     WorktreeColumn::Agent,
@@ -380,6 +395,18 @@ fn columns_or_default<T: Copy + PartialEq>(configured: Option<&[T]>, defaults: &
     } else {
         columns
     }
+}
+
+/// Keep the global value of a global-only dashboard setting, warning when the
+/// project config tries to set it.
+fn global_only_dashboard_field<T>(name: &str, global: Option<T>, project_set: bool) -> Option<T> {
+    if project_set {
+        tracing::warn!(
+            "dashboard.{name} in project config (.workmux.yaml) is ignored -- \
+             move it to your global config (~/.config/workmux/config.yaml)"
+        );
+    }
+    global
 }
 
 impl DashboardConfig {
@@ -427,6 +454,32 @@ impl DashboardConfig {
     /// Default: true.
     pub fn close_on_jump(&self) -> bool {
         self.close_on_jump.unwrap_or(true)
+    }
+
+    /// Workspace directories with `~` expanded. Empty when unset.
+    #[allow(dead_code)] // consumed by the dashboard workspace/provider code
+    pub fn workspaces(&self) -> Vec<PathBuf> {
+        self.workspaces
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|dir| crate::util::expand_tilde(dir))
+            .collect()
+    }
+
+    /// Worktree info provider command. A blank string means none.
+    #[allow(dead_code)] // consumed by the dashboard workspace/provider code
+    pub fn worktree_info_command(&self) -> Option<&str> {
+        self.worktree_info_command
+            .as_deref()
+            .filter(|command| !command.trim().is_empty())
+    }
+
+    /// Refresh interval of the worktree info provider.
+    /// Default: 15 seconds, minimum 2 seconds.
+    #[allow(dead_code)] // consumed by the dashboard workspace/provider code
+    pub fn worktree_info_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.worktree_info_interval.unwrap_or(15).max(2))
     }
 }
 
@@ -3266,6 +3319,24 @@ impl Config {
                 .dashboard
                 .close_on_jump
                 .or(self.dashboard.close_on_jump),
+            // Global-only: workspace scanning and the info command run
+            // commands/read paths chosen by the user, so project config
+            // (which may come from an untrusted repo) must not set them.
+            workspaces: global_only_dashboard_field(
+                "workspaces",
+                self.dashboard.workspaces.clone(),
+                project.dashboard.workspaces.is_some(),
+            ),
+            worktree_info_command: global_only_dashboard_field(
+                "worktree_info_command",
+                self.dashboard.worktree_info_command.clone(),
+                project.dashboard.worktree_info_command.is_some(),
+            ),
+            worktree_info_interval: global_only_dashboard_field(
+                "worktree_info_interval",
+                self.dashboard.worktree_info_interval,
+                project.dashboard.worktree_info_interval.is_some(),
+            ),
         };
 
         // Sidebar config: per-field override
@@ -3789,7 +3860,8 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 # Preview size (10-90): larger = more preview, less table. Use +/- keys to adjust.
 # Columns of the agents table, in display order. Omit a column to hide it:
 # number, project, worktree, git, pr, status, time, title.
-# Worktree columns: number, project, worktree, git, pr, mux, age, agent.
+# Worktree columns: number, project, worktree, git, pr, env, mux, age, agent.
+# The env column shows data from worktree_info_command and is hidden without it.
 # Default sort mode for the agent list: priority (default), project, recency, natural.
 # Used only when no sort preference has been persisted in the dashboard.
 # dashboard:
@@ -3798,10 +3870,18 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 #   layout: stacked # or side_by_side (preview left, table right)
 #   preview_size: 60
 #   agent_columns: [number, project, worktree, git, pr, status, time, title]
-#   worktree_columns: [number, project, worktree, git, pr, mux, age, agent]
+#   worktree_columns: [number, project, worktree, git, pr, env, mux, age, agent]
 #   sort_mode: priority
 #   close_on_jump: true
 #   input_exit_key: Esc # Esc or Ctrl+<letter> (a-z)
+#
+#   # Global-only (ignored in project config):
+#   # Show every git repository found directly inside these directories.
+#   workspaces: ["~/code"]
+#   # Command printing per-worktree environment info as JSON (fills `env`).
+#   worktree_info_command: "my-env-tool status --json"
+#   # Seconds between runs of the command (default 15, minimum 2).
+#   worktree_info_interval: 15
 
 #-------------------------------------------------------------------------------
 # Sidebar
@@ -4297,10 +4377,81 @@ mod tests {
                 WorktreeColumn::Worktree,
                 WorktreeColumn::Git,
                 WorktreeColumn::Pr,
+                WorktreeColumn::Env,
                 WorktreeColumn::Mux,
                 WorktreeColumn::Age,
                 WorktreeColumn::Agent
             ]
+        );
+    }
+
+    fn dashboard_cfg(edit: impl FnOnce(&mut DashboardConfig)) -> Config {
+        cfg(|config| edit(&mut config.dashboard))
+    }
+
+    #[test]
+    fn dashboard_workspaces_global_only() {
+        let global = dashboard_cfg(|d| d.workspaces = Some(vec!["~/ws".into()]));
+        let project = dashboard_cfg(|d| d.workspaces = Some(vec!["/evil".into()]));
+        let merged = global.merge(project);
+        let home = home::home_dir().expect("home dir");
+        assert_eq!(merged.dashboard.workspaces(), vec![home.join("ws")]);
+    }
+
+    #[test]
+    fn dashboard_workspaces_empty_when_unset() {
+        assert!(Config::default().dashboard.workspaces().is_empty());
+    }
+
+    #[test]
+    fn dashboard_worktree_info_command_global_only() {
+        let global = Config::default();
+        let project = dashboard_cfg(|d| d.worktree_info_command = Some("evil".into()));
+        let merged = global.merge(project);
+        assert_eq!(merged.dashboard.worktree_info_command(), None);
+
+        let global = dashboard_cfg(|d| d.worktree_info_command = Some("good".into()));
+        let project = dashboard_cfg(|d| d.worktree_info_command = Some("evil".into()));
+        assert_eq!(
+            global.merge(project).dashboard.worktree_info_command(),
+            Some("good")
+        );
+    }
+
+    #[test]
+    fn dashboard_worktree_info_command_blank_is_none() {
+        let config = dashboard_cfg(|d| d.worktree_info_command = Some("   ".into()));
+        assert_eq!(config.dashboard.worktree_info_command(), None);
+    }
+
+    #[test]
+    fn dashboard_worktree_info_interval_default_and_floor() {
+        use std::time::Duration;
+        let interval = |value: Option<u64>| {
+            dashboard_cfg(|d| d.worktree_info_interval = value)
+                .dashboard
+                .worktree_info_interval()
+        };
+        assert_eq!(interval(None), Duration::from_secs(15));
+        assert_eq!(interval(Some(1)), Duration::from_secs(2));
+        assert_eq!(interval(Some(30)), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn dashboard_worktree_info_interval_global_only() {
+        let global = dashboard_cfg(|d| d.worktree_info_interval = Some(20));
+        let project = dashboard_cfg(|d| d.worktree_info_interval = Some(3));
+        let merged = global.merge(project);
+        assert_eq!(merged.dashboard.worktree_info_interval, Some(20));
+    }
+
+    #[test]
+    fn worktree_columns_parse_env() {
+        let config: Config =
+            serde_yaml::from_str("dashboard:\n  worktree_columns: [env]\n").unwrap();
+        assert_eq!(
+            config.dashboard.worktree_columns(),
+            vec![WorktreeColumn::Env]
         );
     }
 

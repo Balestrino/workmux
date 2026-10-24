@@ -29,7 +29,10 @@ The `commit` and `merge` values are text sent to the agent's pane. Use the `!` p
 | `layout`           | `stacked`                                                   | `stacked` (table above preview) or `side_by_side` (preview left, table right) |
 | `preview_size`     | `60`                                                        | Preview height or width as percentage (10-90)                                 |
 | `agent_columns`    | `[number, project, worktree, git, pr, status, time, title]` | Agents table columns, in display order                                        |
-| `worktree_columns` | `[number, project, worktree, git, pr, mux, age, agent]`     | Worktree table columns, in display order                                      |
+| `worktree_columns` | `[number, project, worktree, git, pr, env, mux, age, agent]` | Worktree table columns, in display order                                     |
+| `workspaces`       | unset                                                       | Directories whose git repositories are all shown (global config only)         |
+| `worktree_info_command` | unset                                                  | Command printing per-worktree environment info as JSON (global config only)   |
+| `worktree_info_interval` | `15`                                                  | Seconds between runs of the info command, minimum `2` (global config only)    |
 | `close_on_jump`    | `true`                                                      | Close the dashboard after a jump                                              |
 | `input_exit_key`   | `Esc`                                                       | Key to exit input mode (`Esc` or `Ctrl+<letter>`)                             |
 
@@ -110,6 +113,7 @@ dashboard:
 | `pr`        | Pull request number and check status            |
 | `pr_title`  | Pull request title                              |
 | `pr_issues` | Issues closed by the pull request               |
+| `env`       | Environment info from `worktree_info_command`   |
 | `mux`       | Whether a multiplexer window is open            |
 | `age`       | Time since worktree creation                    |
 | `agent`     | Agent status summary                            |
@@ -117,6 +121,15 @@ dashboard:
 The list sets display order; omitted columns are hidden and duplicates are ignored. An absent or empty list uses the default order. Project configuration overrides the global list, and an explicit empty project list resets it to defaults.
 
 A trailing `agent`, `pr_title`, or `pr_issues` fills the remaining width. Elsewhere it sizes to its content, leaving extra space at the right edge. The `pr` column is hidden until a worktree has a pull request or checks, except when it is the only configured column: like the agents table, it stays visible to avoid an empty table. The opt-in PR metadata columns use the same closing-reference and blank-cell behavior as the Agents table.
+
+`workspaces`, `worktree_info_command`, and `worktree_info_interval` are read only from the global config (`~/.config/workmux/config.yaml`). Setting them in a project's `.workmux.yaml` logs a warning and is ignored.
+
+```yaml
+dashboard:
+  workspaces: ["~/code"]
+  worktree_info_command: "my-env-tool status --json"
+  worktree_info_interval: 15
+```
 
 Hiding `number` does not disable `1`-`9` jumps. Hiding `git` does not disable Git status updates or remove the selected worktree's Git details from the preview.
 

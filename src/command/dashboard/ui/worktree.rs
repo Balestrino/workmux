@@ -179,6 +179,8 @@ fn visible_columns(configured: &[WorktreeColumn], show_pr_column: bool) -> Vec<W
         .iter()
         .copied()
         .filter(|column| *column != WorktreeColumn::Pr || show_pr_column)
+        // Env has no data source yet; always hidden for now.
+        .filter(|column| *column != WorktreeColumn::Env)
         .collect();
     if visible.is_empty() {
         configured.to_vec()
@@ -203,6 +205,7 @@ fn worktree_cell(
         WorktreeColumn::Pr => Cell::from(format::spans_to_line(row.pr_spans.clone())),
         WorktreeColumn::PrTitle => Cell::from(row.pr_title.clone()),
         WorktreeColumn::PrIssues => Cell::from(row.pr_issues.clone()),
+        WorktreeColumn::Env => Cell::from(""),
         WorktreeColumn::Mux => {
             if row.has_mux_window {
                 Cell::from("\u{25cf}").style(Style::default().fg(palette.success))
@@ -245,6 +248,7 @@ fn build_worktree_table(
             WorktreeColumn::Pr => ResourceHeaderCell::Pr,
             WorktreeColumn::PrTitle => ResourceHeaderCell::Plain("PR Title"),
             WorktreeColumn::PrIssues => ResourceHeaderCell::Plain("PR Issues"),
+            WorktreeColumn::Env => ResourceHeaderCell::Plain("Env"),
             WorktreeColumn::Mux => ResourceHeaderCell::Plain("Mux"),
             WorktreeColumn::Age => ResourceHeaderCell::Plain("Age"),
             WorktreeColumn::Agent => ResourceHeaderCell::Plain("Agent"),
@@ -308,6 +312,7 @@ fn build_worktree_table(
             WorktreeColumn::PrTitle => Constraint::Length(max_pr_title_width),
             WorktreeColumn::PrIssues if index == last_column => Constraint::Fill(1),
             WorktreeColumn::PrIssues => Constraint::Length(max_pr_issues_width),
+            WorktreeColumn::Env => Constraint::Length(8),
             WorktreeColumn::Mux => Constraint::Length(4),
             WorktreeColumn::Age => Constraint::Length(4),
             // Fill only at the end, so columns after Agent stay contiguous.
@@ -691,7 +696,8 @@ mod tests {
 
     #[test]
     fn worktree_table_preserves_default_layout() {
-        let buffer = render(&DEFAULT_WORKTREE_COLUMNS, vec![row()], 80, None);
+        let columns = visible_columns(&DEFAULT_WORKTREE_COLUMNS, true);
+        let buffer = render(&columns, vec![row()], 80, None);
         assert_eq!(
             line(&buffer, 0),
             "#  Project Worktree  Git   PR    Mux  Age  Agent"
