@@ -104,7 +104,7 @@ dashboard:
   # worktree_columns: [number, project, worktree, git, env, mux, age]
 ```
 
-*Builder's call:* `workspaces`, `worktree_info_command` and
+_Builder's call:_ `workspaces`, `worktree_info_command` and
 `worktree_info_interval` are **global-only**. In a project `.workmux.yaml`
 they are ignored with a warning, following upstream's existing rule for
 command settings (`auto_name.command`, `host_commands`, … in
@@ -192,11 +192,11 @@ the dashboard run arbitrary commands.
   default 15 s) while the dashboard is open, plus once immediately when
   the dashboard opens or the Worktrees tab is shown. Never more than one
   run at a time. Timeout 10 s, after which the child is killed.
-  *Builder's call:* a timer separate from the 5 s worktree refresh,
+  _Builder's call:_ a timer separate from the 5 s worktree refresh,
   because the provider may be slower than git. `overview --json` measured
   about 1 s on the Octolabs VM with 3 environments, and the kit command
   below is lighter.
-- *Builder's call:* if an orphan's canonical path matches a row that is
+- _Builder's call:_ if an orphan's canonical path matches a row that is
   listed, the entry is attached to that row instead of becoming a
   "(missing)" row. This protects against the provider and workmux seeing
   different sets of repositories.
@@ -221,7 +221,7 @@ the dashboard run arbitrary commands.
   Path, Env, details, and the hint on its own line.
 - **Actions on orphan rows**: every worktree action is a no-op (optionally
   a brief footer message); the git log pane shows "(worktree missing)".
-- *Builder's call:* the Worktree and Age columns keep upstream's rendering
+- _Builder's call:_ the Worktree and Age columns keep upstream's rendering
   (`dev` for a main checkout, `handle →branch` when they differ, upstream
   age units). The mockup below shows the layout and the new elements, not
   exact cell text. One change: on a main checkout, the Info panel title
@@ -243,7 +243,7 @@ Mockup accepted by the user (variant A), as layout reference:
 ┌ work/linkedin-connector ──────────┐┌ git log ─────────────
 │ Branch  work/linkedin-connector   ││ a1b2c3d feat: ...
 │ Base    dev (↑2)                  ││
-│ Env     ready · dd4b4587          ││
+│ Env     ready · 00000000          ││
 │ backend http://127.0.0.1:18600    ││
 │ console http://orkestra-…:18601   ││
 ```
@@ -260,8 +260,8 @@ Mockup accepted by the user (variant A), as layout reference:
     as workmux;
   - `name` is the missing directory's basename;
   - `hint` is the `forget` command. Status tone
-  mapping: `ready` → success, `starting|stopping|preparing` → info,
-  `failed|error` → error, everything else → warning.
+    mapping: `ready` → success, `starting|stopping|preparing` → info,
+    `failed|error` → error, everything else → warning.
 - Docs (`docs/workmux.md`, runbook "dove guardare") describe the fork, the
   config above and that `overview --watch` is superseded.
 

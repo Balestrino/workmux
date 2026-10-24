@@ -22,19 +22,19 @@ The `commit` and `merge` values are text sent to the agent's pane. Use the `!` p
 
 ## Defaults
 
-| Option             | Default value                                               | Description                                                                   |
-| ------------------ | ----------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `commit`           | `Commit staged changes with a descriptive message`          | Natural language prompt                                                       |
-| `merge`            | `!workmux merge`                                            | Shell command via agent                                                       |
-| `layout`           | `stacked`                                                   | `stacked` (table above preview) or `side_by_side` (preview left, table right) |
-| `preview_size`     | `60`                                                        | Preview height or width as percentage (10-90)                                 |
-| `agent_columns`    | `[number, project, worktree, git, pr, status, time, title]` | Agents table columns, in display order                                        |
-| `worktree_columns` | `[number, project, worktree, git, pr, env, mux, age, agent]` | Worktree table columns, in display order                                     |
-| `workspaces`       | unset                                                       | Directories whose git repositories are all shown (global config only)         |
-| `worktree_info_command` | unset                                                  | Command printing per-worktree environment info as JSON (global config only)   |
-| `worktree_info_interval` | `15`                                                  | Seconds between runs of the info command, minimum `2` (global config only)    |
-| `close_on_jump`    | `true`                                                      | Close the dashboard after a jump                                              |
-| `input_exit_key`   | `Esc`                                                       | Key to exit input mode (`Esc` or `Ctrl+<letter>`)                             |
+| Option                   | Default value                                                | Description                                                                              |
+| ------------------------ | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
+| `commit`                 | `Commit staged changes with a descriptive message`           | Natural language prompt                                                                  |
+| `merge`                  | `!workmux merge`                                             | Shell command via agent                                                                  |
+| `layout`                 | `stacked`                                                    | `stacked` (table above preview) or `side_by_side` (preview left, table right)            |
+| `preview_size`           | `60`                                                         | Preview height or width as percentage (10-90)                                            |
+| `agent_columns`          | `[number, project, worktree, git, pr, status, time, title]`  | Agents table columns, in display order                                                   |
+| `worktree_columns`       | `[number, project, worktree, git, pr, env, mux, age, agent]` | Worktree table columns, in display order                                                 |
+| `workspaces`             | unset                                                        | Show every git repository one or two levels below these directories (global config only) |
+| `worktree_info_command`  | unset                                                        | Command printing per-worktree environment info as JSON (global config only)              |
+| `worktree_info_interval` | `15`                                                         | Seconds between runs of the info command, minimum `2` (global config only)               |
+| `close_on_jump`          | `true`                                                       | Close the dashboard after a jump                                                         |
+| `input_exit_key`         | `Esc`                                                        | Key to exit input mode (`Esc` or `Ctrl+<letter>`)                                        |
 
 ## Input mode exit key
 
@@ -132,6 +132,74 @@ dashboard:
 ```
 
 Hiding `number` does not disable `1`-`9` jumps. Hiding `git` does not disable Git status updates or remove the selected worktree's Git details from the preview.
+
+## Workspaces
+
+With `workspaces` set, the Worktrees tab lists the worktrees of every git repository found one or two levels below the listed directories, plus the repositories of running agents. A repository is a directory whose `.git` is a directory; hidden directories and the inside of a repository are not searched. `~` is expanded.
+
+The project name is the first path component below the workspace directory, so `~/code/app/main` is shown as `app`. When several repositories share that component, each gets its full relative path instead, such as `sync/one` and `sync/two`. Every worktree of a repository, and every agent working in it, shows the same name. Repositories outside the workspaces keep the usual name derived from their path.
+
+Press `p` on the Worktrees tab to pick a project. The first entry, **All projects**, lists every repository; any other entry narrows the tab to that repository. Row actions (open, close, remove, base branch, add worktree) act in the selected row's repository and use that repository's configuration. On the Agents tab, the command palette's **Add worktree** adds to the selected agent's repository.
+
+Without `workspaces` the tab lists the current repository only, the picker has no **All projects** entry, and project names are derived from each worktree's path.
+
+## Worktree info provider
+
+`worktree_info_command` adds environment information from your own tooling to the Worktrees tab. The command runs with `sh -c` in the background: when the dashboard opens, then every `worktree_info_interval` seconds (default `15`, minimum `2`). Only one run happens at a time, and a run that takes longer than 10 seconds is killed. The command prints JSON on stdout; stderr is ignored.
+
+```json
+{
+  "schemaVersion": 1,
+  "worktrees": [
+    {
+      "path": "/home/me/code/app/feature-x",
+      "status": { "label": "ready", "tone": "success" },
+      "id": "00000000-0000-4000-8000-000000000001",
+      "details": [
+        { "label": "backend", "value": "http://127.0.0.1:8080" },
+        { "label": "console", "value": "http://dev-host.example:8081" }
+      ]
+    }
+  ],
+  "orphans": [
+    {
+      "project": "app",
+      "name": "old-feature",
+      "path": "/home/me/code/app/old-feature",
+      "status": { "label": "unknown", "tone": "warning" },
+      "id": "00000000-0000-4000-8000-000000000002",
+      "hint": "my-env-tool forget 00000000"
+    }
+  ]
+}
+```
+
+| Field                      | Required | Content                                                 |
+| -------------------------- | -------- | ------------------------------------------------------- |
+| `schemaVersion`            | yes      | Must be `1`; any other value counts as a failed run     |
+| `worktrees`                | no       | Entries for existing worktrees                          |
+| `worktrees[].path`         | yes      | Worktree path                                           |
+| `worktrees[].status.label` | yes      | Text shown in the `env` column and the info panel       |
+| `worktrees[].status.tone`  | no       | `success`, `warning`, `error`, `info` or `muted`        |
+| `worktrees[].id`           | no       | Identifier; the info panel shows its first 8 characters |
+| `worktrees[].details`      | no       | `label` and `value` pairs, one info panel line each     |
+| `orphans`                  | no       | Environments whose worktree no longer exists            |
+| `orphans[].project`        | yes      | Project shown in the row                                |
+| `orphans[].name`           | yes      | Name shown with `(missing)`                             |
+| `orphans[].path`           | yes      | Path of the missing worktree                            |
+| `orphans[].status`         | yes      | As for worktrees                                        |
+| `orphans[].id`, `.details` | no       | As for worktrees                                        |
+| `orphans[].hint`           | no       | Last line of the info panel, such as a cleanup command  |
+
+- An unknown or missing `tone` is shown as `muted`. Tones use the theme's success, warning, danger, info and dimmed colors.
+- Unknown fields are ignored.
+- Paths are compared after canonicalization, so a symlinked path matches the worktree it points to.
+- When several entries have the same path, the first one wins. An orphan whose path matches a listed worktree is shown on that worktree.
+- A failed run (non-zero exit, timeout, invalid JSON, another `schemaVersion`) keeps the data of the last successful run on screen.
+
+The `env` column appears once a report has arrived; a worktree without an entry shows `-`. The info panel adds an `Env` line with the status and the short id, followed by the details.
+
+Orphans are listed after the worktrees as `name (missing)`, with only the project and the status filled in. They follow the project picker (only orphans whose `project` equals the picked project's name) and the text filter (matching project or name). You can select an orphan to see its path, details and hint in the info panel, but it has no jump number and row actions such as open, close, remove or add worktree do nothing on it.
 
 ## Layout
 

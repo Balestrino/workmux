@@ -285,7 +285,7 @@ pub struct DashboardConfig {
     /// Default: true.
     pub close_on_jump: Option<bool>,
 
-    /// Directories whose immediate subdirectories that are git repositories
+    /// Directories whose git repositories, found one or two levels below them,
     /// are all shown in the dashboard. `~` is expanded. Global-only.
     pub workspaces: Option<Vec<String>>,
 
@@ -3873,7 +3873,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 #   input_exit_key: Esc # Esc or Ctrl+<letter> (a-z)
 #
 #   # Global-only (ignored in project config):
-#   # Show every git repository found directly inside these directories.
+#   # Show every git repository found one or two levels below these directories.
 #   workspaces: ["~/code"]
 #   # Command printing per-worktree environment info as JSON (fills `env`).
 #   worktree_info_command: "my-env-tool status --json"

@@ -37,11 +37,13 @@
 ### Task 1: Config settings and Env column enum
 
 **Files:**
+
 - Modify: `src/config.rs` (`DashboardConfig` ~L246, `impl DashboardConfig` ~L385, `WorktreeColumn` ~L346, `DEFAULT_WORKTREE_COLUMNS` ~L360, dashboard merge ~L3240, example config text ~L3787)
 - Modify: the docs page that documents `worktree_columns` (find it with `grep -rn worktree_columns docs README.md`)
 - Test: `src/config.rs` tests module
 
 **Interfaces:**
+
 - Produces:
   - `DashboardConfig.workspaces: Option<Vec<String>>`
   - `DashboardConfig.worktree_info_command: Option<String>`
@@ -66,12 +68,15 @@
 ### Task 2: Workspace discovery and project naming
 
 **Files:**
+
 - Create: `src/workspaces.rs`, and register it with `mod workspaces;` in `src/main.rs`
 - Test: inline `#[cfg(test)]` in `src/workspaces.rs`, using `crate::test_support::{init_repo, run_git}` and `tempfile`
 
 **Interfaces:**
+
 - Consumes: `DashboardConfig::workspaces()` (Task 1), `git::get_repository_key_in`, `agent_display::extract_project_name`
 - Produces:
+
   ```rust
   pub struct WorkspaceRepo { pub repo_key: PathBuf, pub main_root: PathBuf, pub project: String }
   /// Repositories under the workspace dirs, sorted by project name.
@@ -79,6 +84,7 @@
   /// Project name for each main root (the key is the canonical main root).
   pub fn project_names(workspaces: &[PathBuf], main_roots: &[PathBuf]) -> HashMap<PathBuf, String>
   ```
+
   `discover_repos` names its results through `project_names`. Callers also use `project_names` for agent-tracked roots outside the workspaces.
 
 - [ ] **Step 1: Write failing tests**, each building a fixture under a `tempdir` `ws`:
@@ -97,6 +103,7 @@
 ### Task 3: Worktrees tab lists all repositories; correct project names; picker
 
 **Files:**
+
 - Modify: `src/command/dashboard/app/worktrees.rs` (`spawn_worktree_fetch` ~L228, project picker ~L693–790)
 - Modify: `src/command/dashboard/app/types.rs` (`AppEvent::WorktreeList`, `ProjectEntry`)
 - Modify: `src/command/dashboard/app/events.rs` (the `WorktreeList` arm)
@@ -106,6 +113,7 @@
 - Test: inline tests in `app/worktrees.rs` or `app/types.rs`, and the render tests in `ui/worktree.rs`
 
 **Interfaces:**
+
 - Consumes: `workspaces::{discover_repos, project_names, WorkspaceRepo}` (Task 2), `DashboardConfig::workspaces()`
 - Produces:
   - `AppEvent::WorktreeList(Vec<WorktreeInfo>, HashMap<PathBuf, String>)`, where the map is `repo_key → project`
@@ -134,6 +142,7 @@
 ### Task 4: Row actions target the row's repository
 
 **Files:**
+
 - Modify: `src/command/dashboard/app/worktrees.rs`, in these functions:
   - `open_selected_worktree` ~L937
   - `close_selected_worktree_window` ~L490
@@ -143,6 +152,7 @@
 - Test: inline in `app/worktrees.rs`
 
 **Interfaces:**
+
 - Consumes: `WorktreeInfo.path` and `WorktreeInfo.repo_key`
 - Produces: `fn worktree_repo_path(&self) -> Option<PathBuf>`. It returns the override path; otherwise, when `workspaces()` is non-empty, the selected row's `path`; otherwise the current upstream behavior.
 
@@ -158,13 +168,16 @@
 ### Task 5: Worktree info provider (parse, run, index, schedule)
 
 **Files:**
+
 - Create: `src/command/dashboard/worktree_info.rs`, and register it in `src/command/dashboard/mod.rs`
 - Modify: `app/types.rs` (new `AppEvent` variant), `app/mod.rs` (fields and tick), `app/events.rs`, `app/worktrees.rs` (`switch_tab`)
 - Test: inline in `worktree_info.rs`
 
 **Interfaces:**
+
 - Consumes: `DashboardConfig::{worktree_info_command, worktree_info_interval}` (Task 1)
 - Produces:
+
   ```rust
   #[derive(Clone, Debug, Deserialize, PartialEq)] pub enum Tone { Success, Warning, Error, Info, Muted } // serde lowercase, unknown → Muted
   pub struct InfoStatus { pub label: String, pub tone: Tone }
@@ -177,6 +190,7 @@
   pub struct InfoIndex { pub by_path: HashMap<PathBuf, InfoEntry>, pub orphans: Vec<OrphanEntry> }
   pub fn index_report(report: &InfoReport, known_paths: &[PathBuf]) -> InfoIndex
   ```
+
   - `AppEvent::WorktreeInfo(Result<InfoReport, String>)`
   - App fields: `worktree_info: Option<InfoReport>` (last good), `worktree_info_index: InfoIndex`, `worktree_info_error: Option<String>`, `is_info_fetching: Arc<AtomicBool>`, `last_info_fetch: Option<Instant>`
   - `App::reindex_worktree_info(&mut self)`, called after `WorktreeList` and `WorktreeInfo` events
@@ -203,12 +217,14 @@
 ### Task 6: Render Env column, orphan rows, Info panel; orphan-safe selection
 
 **Files:**
+
 - Modify: `src/command/dashboard/ui/worktree.rs` (table ~L23–345, `render_info_panel` ~L365, git log ~L595)
 - Modify: `src/command/dashboard/app/worktrees.rs` (`select_worktree`, `worktree_next`, `worktree_previous`, `worktree_jump_to_index` ~L324–372, selection restore in `apply_worktree_filters` ~L284)
 - Modify: `src/command/dashboard/mouse.rs` if row-click bounds use `worktrees.len()`
 - Test: render tests in `ui/worktree.rs` (follow `worktree_table_reorders_headers_and_cells` ~L706), selection tests in `app/worktrees.rs`
 
 **Interfaces:**
+
 - Consumes: `App.worktree_info_index: InfoIndex`, `App.worktree_info: Option<InfoReport>`, and `Tone` (Task 5); `App::project_for` (Task 3)
 - Produces:
   - `App::worktree_row_count(&self) -> usize`, equal to `worktrees.len() + orphans.len()`
@@ -219,7 +235,7 @@
   - `env_column_hidden_without_report`: `worktree_info = None` → the header has no `Env`.
   - `env_column_shows_status`: a row whose path is in the index with label `ready` → the cell text is `● ready`; a row without an entry shows `-`.
   - `orphan_rows_render_after_worktrees`: 2 worktrees and 1 orphan (`project: "alpha"`, `name: "gone"`) → line 3 contains `alpha`, `gone (missing)` and the status label, and has no jump number.
-  - `info_panel_env_lines`: the selected row has an entry with id `dd4b4587-d65e-…` and details backend/console → the panel contains `Env`, `ready · dd4b4587`, `backend http://127.0.0.1:18600`.
+  - `info_panel_env_lines`: the selected row has an entry with id `00000000-0000-…` and details backend/console → the panel contains `Env`, `ready · 00000000`, `backend http://127.0.0.1:18600`.
   - `info_panel_orphan`: the selected index points at the orphan → the panel shows Project, Path, Env, and the hint line; the git log pane shows `(worktree missing)`.
 - [ ] **Step 2: Write failing selection tests**
   - `navigation_reaches_orphans`: 2 worktrees and 1 orphan → `worktree_next` twice from index 0 lands on 2; `selected_orphan()` is Some.
@@ -236,11 +252,13 @@
 ### Task 7: Kit — `overview --workmux-info` and docs (Octolabs VM)
 
 **Files:**
+
 - Modify: `src/overview.mjs` (new exported functions), `src/cli.mjs` (flag `workmux-info`, mutually exclusive with `--json` and `--watch`)
 - Modify: `docs/workmux.md` (Workmux fork section), `docs/runbook.md` ("dove guardare"); check `grep -rn "overview --watch" docs README*` and update every mention
 - Test: `tests/overview.test.mjs`
 
 **Interfaces:**
+
 - Consumes: `environmentsOf` (LifecycleService `list()`), `defaultWorkspaces`, environment fields `worktree`, `worktreePresent`, `state`, `reason`, `environmentId`, `urls`
 - Produces:
   - `export function buildWorkmuxInfo({ workspaces, environments }) -> { schemaVersion: 1, worktrees, orphans }`
