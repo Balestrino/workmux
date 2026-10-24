@@ -7,6 +7,8 @@ mod events;
 mod preview;
 mod types;
 mod worktrees;
+#[cfg(test)]
+pub(super) use worktrees::resolve_project_name;
 
 pub use types::*;
 
@@ -92,6 +94,9 @@ pub struct App {
     repo_keys: HashMap<PathBuf, PathBuf>,
     /// Project display names keyed by repository key (from the last worktree fetch).
     pub project_names: HashMap<PathBuf, String>,
+    last_project_names_fetch: std::time::Instant,
+    project_names_roots_len: Option<usize>,
+    is_project_names_fetching: Arc<AtomicBool>,
     /// Frame counter for spinner animation (increments each tick)
     pub spinner_frame: u8,
     /// Whether to hide stale agents from the list
@@ -260,6 +265,9 @@ impl App {
             repo_roots: HashMap::new(),
             repo_keys: HashMap::new(),
             project_names: HashMap::new(),
+            last_project_names_fetch: std::time::Instant::now(),
+            project_names_roots_len: None,
+            is_project_names_fetching: Arc::new(AtomicBool::new(false)),
             spinner_frame: 0,
             hide_stale,
             show_help: false,
@@ -380,6 +388,8 @@ impl App {
                 }
             }
         }
+
+        self.maybe_spawn_project_names_fetch();
 
         // Apply session scope filter after caching repo roots
         self.scope_mode

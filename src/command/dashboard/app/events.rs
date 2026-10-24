@@ -60,6 +60,9 @@ impl App {
                     self.last_pr_fetch = std::time::Instant::now() - super::PR_FETCH_INTERVAL;
                 }
             }
+            AppEvent::ProjectNames(names) => {
+                self.project_names = names;
+            }
             AppEvent::WorktreeLog(path, log) => {
                 if self.worktree_preview_path.as_ref() == Some(&path) {
                     self.worktree_preview = Some(log);

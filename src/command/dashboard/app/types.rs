@@ -21,6 +21,8 @@ pub enum AppEvent {
     GithubStatus(PathBuf, HashMap<String, BranchSummary>),
     /// Full worktree list from background fetch
     WorktreeList(Vec<WorktreeInfo>, HashMap<PathBuf, String>),
+    /// Project names for all known repositories (repo_key -> project).
+    ProjectNames(HashMap<PathBuf, String>),
     /// Git log preview for a worktree path
     WorktreeLog(PathBuf, String),
     /// Result of a confirmed background removal.

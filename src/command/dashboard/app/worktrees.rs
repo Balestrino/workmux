@@ -22,7 +22,7 @@ use super::types::*;
 
 /// Project name for a repository: the name computed for its repository key,
 /// else derived from the path.
-pub(super) fn resolve_project_name(
+pub(in crate::command::dashboard) fn resolve_project_name(
     names: &HashMap<PathBuf, String>,
     repo_key: &Path,
     path: &Path,
@@ -85,16 +85,68 @@ fn names_by_repo_key(
             *entry = &wt.path;
         }
     }
-    let roots: Vec<PathBuf> = main_roots.values().map(|p| (*p).clone()).collect();
-    let by_root = workspaces::project_names(workspace_dirs, &roots);
-    main_roots
+    let repos: Vec<(PathBuf, PathBuf)> = main_roots
         .into_iter()
+        .map(|(key, root)| (key.clone(), root.clone()))
+        .collect();
+    names_for_repos(workspace_dirs, &repos)
+}
+
+/// Project names for `(repo_key, main_root)` pairs, keyed by repository key.
+/// Always call this with every known repository (not a narrowed view) so
+/// repositories sharing a first path component keep their full relative name.
+fn names_for_repos(
+    workspace_dirs: &[PathBuf],
+    repos: &[(PathBuf, PathBuf)],
+) -> HashMap<PathBuf, String> {
+    let roots: Vec<PathBuf> = repos.iter().map(|(_, root)| root.clone()).collect();
+    let by_root = workspaces::project_names(workspace_dirs, &roots);
+    repos
+        .iter()
         .filter_map(|(key, root)| {
             by_root
                 .get(&canon_or_self(root))
                 .map(|name| (key.clone(), name.clone()))
         })
         .collect()
+}
+
+/// Names for every repository under the workspaces plus the agent roots.
+/// Runs git, so call it from a background thread.
+fn all_project_names(
+    workspace_dirs: &[PathBuf],
+    agent_roots: &[PathBuf],
+) -> HashMap<PathBuf, String> {
+    let discovered = workspaces::discover_repos(workspace_dirs);
+    let mut seen = HashSet::new();
+    let mut repos: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for r in &discovered {
+        if seen.insert(r.repo_key.clone()) {
+            repos.push((r.repo_key.clone(), r.main_root.clone()));
+        }
+    }
+    for root in fetch_roots(&discovered, agent_roots) {
+        if discovered
+            .iter()
+            .any(|r| canon_or_self(&r.main_root) == canon_or_self(&root))
+        {
+            continue;
+        }
+        if let Ok(key) = git::get_repository_key_in(Some(&root))
+            && seen.insert(key.clone())
+        {
+            repos.push((key, root));
+        }
+    }
+    names_for_repos(workspace_dirs, &repos)
+}
+
+/// Picker selection as a worktree-view override; "All projects" clears it.
+fn override_for(entry: &ProjectEntry) -> Option<(String, PathBuf)> {
+    entry
+        .repo_key
+        .as_ref()
+        .map(|_| (entry.name.clone(), entry.path.clone()))
 }
 
 /// Picker entries for `(repo_key, main_root)` pairs, one per repository,
@@ -385,9 +437,46 @@ impl App {
                 Some(list_all_repos(&config, mux.as_ref(), &roots))
             };
             if let Some(worktrees) = worktrees {
-                let names = names_by_repo_key(&workspace_dirs, &worktrees);
+                let names = if workspace_dirs.is_empty() {
+                    names_by_repo_key(&workspace_dirs, &worktrees)
+                } else {
+                    // Full set even when narrowed, so names do not depend on the view.
+                    all_project_names(&workspace_dirs, &agent_roots)
+                };
                 let _ = tx.send(AppEvent::WorktreeList(worktrees, names));
             }
+        });
+    }
+
+    /// Refresh project names in the background so the Agents tab does not
+    /// depend on the Worktrees tab. Only active when workspaces are configured.
+    pub(super) fn maybe_spawn_project_names_fetch(&mut self) {
+        let workspace_dirs = self.config.dashboard.workspaces();
+        if workspace_dirs.is_empty() {
+            return;
+        }
+        let roots_len = self.repo_roots.len();
+        if self.project_names_roots_len == Some(roots_len)
+            && self.last_project_names_fetch.elapsed() < Duration::from_secs(30)
+        {
+            return;
+        }
+        if self
+            .is_project_names_fetching
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+        self.project_names_roots_len = Some(roots_len);
+        self.last_project_names_fetch = std::time::Instant::now();
+        let agent_roots: Vec<PathBuf> = self.repo_roots.values().cloned().collect();
+        let tx = self.event_tx.clone();
+        let flag = self.is_project_names_fetching.clone();
+        std::thread::spawn(move || {
+            let names = all_project_names(&workspace_dirs, &agent_roots);
+            flag.store(false, Ordering::SeqCst);
+            let _ = tx.send(AppEvent::ProjectNames(names));
         });
     }
 
@@ -898,10 +987,7 @@ impl App {
         };
         let selected = &picker.projects[idx];
 
-        self.worktree_project_override = selected
-            .repo_key
-            .as_ref()
-            .map(|_| (selected.name.clone(), selected.path.clone()));
+        self.worktree_project_override = override_for(selected);
         self.worktrees.clear();
         self.all_worktrees.clear();
         self.last_worktree_fetch = std::time::Instant::now();
@@ -1607,7 +1693,56 @@ mod tests {
     }
 
     #[test]
-    fn worktree_table_uses_project_map() {
+    fn names_use_full_set_so_narrowed_view_keeps_relative_names() {
+        let ws = vec![PathBuf::from("/nonexistent-ws")];
+        let one = ("k1".into(), PathBuf::from("/nonexistent-ws/sync/one"));
+        let two = ("k2".into(), PathBuf::from("/nonexistent-ws/sync/two"));
+        let full = names_for_repos(&ws, &[one.clone(), two]);
+        assert_eq!(full[Path::new("k1")], "sync/one");
+        // A single-repo input is what a narrowed view would see: wrong name.
+        let narrowed = names_for_repos(&ws, &[one]);
+        assert_eq!(narrowed[Path::new("k1")], "sync");
+    }
+
+    #[test]
+    fn selecting_all_projects_clears_override() {
+        let all = ProjectEntry {
+            name: ALL_PROJECTS.into(),
+            path: PathBuf::new(),
+            repo_key: None,
+        };
+        assert_eq!(override_for(&all), None);
+        let one = ProjectEntry {
+            name: "sync/one".into(),
+            path: "/ws/sync/one".into(),
+            repo_key: Some("k1".into()),
+        };
+        assert_eq!(
+            override_for(&one),
+            Some(("sync/one".to_string(), PathBuf::from("/ws/sync/one")))
+        );
+    }
+
+    #[test]
+    fn project_entries_use_relative_names_for_shared_first_component() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().canonicalize().unwrap();
+        let a = ws.join("sync/one");
+        let b = ws.join("sync/two");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let entries = project_entries(
+            &[ws],
+            vec![("ka".into(), a.clone()), ("kb".into(), b.clone())],
+        );
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["All projects", "sync/one", "sync/two"]);
+        assert_eq!(entries[1].path, a);
+        assert_eq!(entries[2].repo_key.as_deref(), Some(Path::new("kb")));
+    }
+
+    #[test]
+    fn resolve_project_name_prefers_map_then_path() {
         let mut names = HashMap::new();
         names.insert(PathBuf::from("k/.git"), "alpha".to_string());
         let wt = worktree("k", "main", true);

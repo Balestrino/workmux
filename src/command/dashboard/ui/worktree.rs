@@ -697,6 +697,22 @@ mod tests {
     }
 
     #[test]
+    fn worktree_table_uses_project_map() {
+        use WorktreeColumn::*;
+        let mut names = std::collections::HashMap::new();
+        names.insert(std::path::PathBuf::from("k/.git"), "alpha".to_string());
+        let mut r = row();
+        r.project = crate::command::dashboard::app::resolve_project_name(
+            &names,
+            std::path::Path::new("k/.git"),
+            std::path::Path::new("/ws/zzz/primary-clone"),
+        );
+        let buffer = render(&[Worktree, Project], vec![r], 40, None);
+        assert_eq!(line(&buffer, 0), "Worktree  Project");
+        assert_eq!(line(&buffer, 1), "wt        alpha");
+    }
+
+    #[test]
     fn info_title_for_main_checkout() {
         let mut wt = crate::workflow::types::WorktreeInfo {
             repo_key: "k/.git".into(),
