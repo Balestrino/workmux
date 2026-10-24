@@ -71,6 +71,11 @@ impl App {
                     Err(e) => self.worktree_info_error = Some(e),
                 }
                 self.reindex_worktree_info();
+                // Orphan rows may have appeared or vanished: re-resolve the
+                // selection by path so it stays on the same row.
+                if !self.all_worktrees.is_empty() {
+                    self.apply_worktree_filters();
+                }
             }
             AppEvent::ProjectNames(names) => {
                 self.project_names = names;

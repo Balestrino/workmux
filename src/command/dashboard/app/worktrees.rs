@@ -17,7 +17,7 @@ use crate::workspaces::{self, WorkspaceRepo};
 
 use super::super::agent;
 use super::super::sort::WorktreeSortMode;
-use super::super::worktree_info;
+use super::super::worktree_info::{self, OrphanEntry};
 use super::App;
 use super::types::*;
 
@@ -356,6 +356,38 @@ fn run_add_worktree_job(
     }
 }
 
+/// What a table row index refers to: a listed worktree, an orphan row after
+/// them, or nothing.
+#[derive(Debug, PartialEq, Eq)]
+enum RowKind {
+    Worktree(usize),
+    Orphan(usize),
+    None,
+}
+
+fn row_kind(index: usize, worktree_len: usize, orphan_len: usize) -> RowKind {
+    if index < worktree_len {
+        RowKind::Worktree(index)
+    } else if index - worktree_len < orphan_len {
+        RowKind::Orphan(index - worktree_len)
+    } else {
+        RowKind::None
+    }
+}
+
+fn wrap_next(current: usize, count: usize) -> usize {
+    if current + 1 >= count { 0 } else { current + 1 }
+}
+
+fn wrap_prev(current: usize, count: usize) -> usize {
+    if current == 0 { count - 1 } else { current - 1 }
+}
+
+/// Keyboard jump numbers address real worktree rows only.
+fn jump_target(index: usize, worktree_len: usize) -> Option<usize> {
+    (index < worktree_len).then_some(index)
+}
+
 /// Pick the repository an action targets: the project override, else (in all
 /// mode) the selected row, else the dashboard's current worktree, else the
 /// first listed row.
@@ -590,10 +622,18 @@ impl App {
         // Sort after filtering
         self.sort_worktrees();
 
-        // Restore selection by path
+        // Restore selection by path (orphan rows follow the real rows)
         if let Some(ref path) = self.selected_worktree_path {
+            let orphan_idx = self
+                .worktree_info_index
+                .orphans
+                .iter()
+                .position(|o| &o.path == path);
             if let Some(idx) = self.worktrees.iter().position(|w| &w.path == path) {
                 self.worktree_table_state.select(Some(idx));
+            } else if let Some(idx) = orphan_idx {
+                self.worktree_table_state
+                    .select(Some(self.worktrees.len() + idx));
             } else {
                 self.selected_worktree_path = None;
                 if self.worktrees.is_empty() {
@@ -610,46 +650,71 @@ impl App {
         self.update_worktree_preview();
     }
 
+    /// Number of selectable rows: the listed worktrees plus the orphan rows.
+    pub fn worktree_row_count(&self) -> usize {
+        self.worktrees.len() + self.worktree_info_index.orphans.len()
+    }
+
+    /// The orphan row under the selection, if the selection is on one.
+    pub fn selected_orphan(&self) -> Option<&OrphanEntry> {
+        let selected = self.worktree_table_state.selected()?;
+        match row_kind(
+            selected,
+            self.worktrees.len(),
+            self.worktree_info_index.orphans.len(),
+        ) {
+            RowKind::Orphan(i) => self.worktree_info_index.orphans.get(i),
+            _ => None,
+        }
+    }
+
+    /// Path identifying the row at `index` (worktree or orphan).
+    pub fn row_path(&self, index: usize) -> Option<PathBuf> {
+        match row_kind(
+            index,
+            self.worktrees.len(),
+            self.worktree_info_index.orphans.len(),
+        ) {
+            RowKind::Worktree(i) => self.worktrees.get(i).map(|w| w.path.clone()),
+            RowKind::Orphan(i) => self
+                .worktree_info_index
+                .orphans
+                .get(i)
+                .map(|o| o.path.clone()),
+            RowKind::None => None,
+        }
+    }
+
     pub fn select_worktree(&mut self, index: usize) {
-        if index >= self.worktrees.len() {
+        if index >= self.worktree_row_count() {
             return;
         }
         self.worktree_table_state.select(Some(index));
-        self.selected_worktree_path = self
-            .worktrees
-            .get(index)
-            .map(|worktree| worktree.path.clone());
+        self.selected_worktree_path = self.row_path(index);
         self.update_worktree_preview();
     }
 
     pub fn worktree_next(&mut self) {
-        if self.worktrees.is_empty() {
+        let count = self.worktree_row_count();
+        if count == 0 {
             return;
         }
         let i = self.worktree_table_state.selected().unwrap_or(0);
-        let next = if i >= self.worktrees.len() - 1 {
-            0
-        } else {
-            i + 1
-        };
-        self.select_worktree(next);
+        self.select_worktree(wrap_next(i, count));
     }
 
     pub fn worktree_previous(&mut self) {
-        if self.worktrees.is_empty() {
+        let count = self.worktree_row_count();
+        if count == 0 {
             return;
         }
         let i = self.worktree_table_state.selected().unwrap_or(0);
-        let prev = if i == 0 {
-            self.worktrees.len() - 1
-        } else {
-            i - 1
-        };
-        self.select_worktree(prev);
+        self.select_worktree(wrap_prev(i, count));
     }
 
+    /// Jump to the worktree at `index`. Only real rows have jump numbers.
     pub fn worktree_jump_to_index(&mut self, index: usize) {
-        if index < self.worktrees.len() {
+        if let Some(index) = jump_target(index, self.worktrees.len()) {
             self.worktree_table_state.select(Some(index));
             self.selected_worktree_path = self.worktrees.get(index).map(|w| w.path.clone());
             self.jump_to_selected_worktree();
@@ -1947,5 +2012,28 @@ mod tests {
         merge_worktree_prs(&mut rows, &statuses);
         assert_eq!(rows[0].pr_info, None);
         assert_eq!(rows[1].pr_info, Some(pr(102)));
+    }
+
+    #[test]
+    fn navigation_reaches_orphans() {
+        // 2 worktrees + 1 orphan = 3 rows.
+        assert_eq!(wrap_next(0, 3), 1);
+        assert_eq!(wrap_next(1, 3), 2);
+        assert_eq!(wrap_next(2, 3), 0);
+        assert_eq!(wrap_prev(0, 3), 2);
+        assert_eq!(row_kind(1, 2, 1), RowKind::Worktree(1));
+        assert_eq!(row_kind(2, 2, 1), RowKind::Orphan(0));
+        assert_eq!(row_kind(3, 2, 1), RowKind::None);
+    }
+
+    #[test]
+    fn actions_noop_on_orphan() {
+        // Every worktree action resolves its target with `worktrees.get(selected)`,
+        // which is only reachable for `RowKind::Worktree`.
+        assert!(!matches!(row_kind(2, 2, 1), RowKind::Worktree(_)));
+        // Jump numbers (1-9) address real rows only.
+        assert_eq!(row_kind(2, 2, 1), RowKind::Orphan(0));
+        assert_eq!(jump_target(2, 2), None);
+        assert_eq!(jump_target(1, 2), Some(1));
     }
 }

@@ -3,7 +3,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::Style,
+    style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{Block, Cell, Paragraph, Row, Table},
 };
@@ -12,6 +12,7 @@ use crate::config::WorktreeColumn;
 
 use super::super::agent;
 use super::super::app::App;
+use super::super::worktree_info::{InfoDetail, InfoEntry, InfoStatus, OrphanEntry, Tone};
 use super::format;
 use super::format::{
     AgentStatusFormat, ResourceHeaderCell, format_agent_status_summary, format_git_status,
@@ -27,6 +28,7 @@ pub fn render_worktree_table(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
+    let show_env_column = app.worktree_info.is_some();
     let show_check_counts = app.config.dashboard.show_check_counts();
 
     let worktree_max_width = worktree_width_budget(area.width);
@@ -36,11 +38,15 @@ pub fn render_worktree_table(f: &mut Frame, app: &mut App, area: Rect) {
         worktree.pr_info.is_some() || app.get_checks_for_worktree(worktree).is_some()
     });
 
-    let columns = visible_columns(&app.config.dashboard.worktree_columns(), show_pr_column);
+    let columns = visible_columns(
+        &app.config.dashboard.worktree_columns(),
+        show_pr_column,
+        show_env_column,
+    );
     let show_pr_column = columns.contains(&WorktreeColumn::Pr);
 
     // Pre-compute row data
-    let row_data: Vec<_> = app
+    let mut row_data: Vec<_> = app
         .worktrees
         .iter()
         .enumerate()
@@ -124,6 +130,9 @@ pub fn render_worktree_table(f: &mut Frame, app: &mut App, area: Rect) {
                 .created_at
                 .map(|ts| agent::format_age(now.saturating_sub(ts)));
 
+            let (env_text, env_style) =
+                env_cell(app.worktree_info_index.by_path.get(&wt.path), &app.palette);
+
             WorktreeRowData {
                 jump_key,
                 project,
@@ -137,9 +146,22 @@ pub fn render_worktree_table(f: &mut Frame, app: &mut App, area: Rect) {
                 agent_line: format::spans_to_line(agent_spans),
                 has_mux_window: wt.has_mux_window,
                 age: age.unwrap_or_default(),
+                env_text,
+                env_style,
+                is_orphan: false,
             }
         })
         .collect();
+
+    // Orphan rows (environments whose worktree is gone) follow the real rows.
+    if show_env_column {
+        row_data.extend(
+            app.worktree_info_index
+                .orphans
+                .iter()
+                .map(|orphan| orphan_row(orphan, &app.palette, worktree_max_width)),
+        );
+    }
 
     let table = build_worktree_table(
         &columns,
@@ -170,17 +192,82 @@ struct WorktreeRowData {
     agent_line: Line<'static>,
     has_mux_window: bool,
     age: String,
+    env_text: String,
+    env_style: Style,
+    is_orphan: bool,
 }
 
-/// Hide PR until GitHub status is available, unless it is the only configured
-/// column and hiding it would blank the table.
-fn visible_columns(configured: &[WorktreeColumn], show_pr_column: bool) -> Vec<WorktreeColumn> {
+/// Map a provider tone to a palette color.
+fn tone_color(tone: &Tone, palette: &ThemePalette) -> Color {
+    match tone {
+        Tone::Success => palette.success,
+        Tone::Warning => palette.accent,
+        Tone::Error => palette.danger,
+        Tone::Info => palette.info,
+        Tone::Muted => palette.dimmed,
+    }
+}
+
+fn status_cell(status: &InfoStatus, palette: &ThemePalette) -> (String, Style) {
+    (
+        format!("\u{25cf} {}", status.label),
+        Style::default().fg(tone_color(&status.tone, palette)),
+    )
+}
+
+/// Env cell: the colored status, or a dimmed `-` for a worktree without entry.
+fn env_cell(entry: Option<&InfoEntry>, palette: &ThemePalette) -> (String, Style) {
+    match entry {
+        Some(entry) => status_cell(&entry.status, palette),
+        None => ("-".into(), Style::default().fg(palette.dimmed)),
+    }
+}
+
+const ORPHAN_SUFFIX: &str = " (missing)";
+
+/// Row for an environment whose worktree no longer exists: only the project,
+/// the `(missing)` name and the status are filled in.
+fn orphan_row(
+    orphan: &OrphanEntry,
+    palette: &ThemePalette,
+    name_max_width: usize,
+) -> WorktreeRowData {
+    let (env_text, env_style) = status_cell(&orphan.status, palette);
+    let name = truncate(
+        &orphan.name,
+        name_max_width.saturating_sub(ORPHAN_SUFFIX.len()),
+    );
+    WorktreeRowData {
+        jump_key: String::new(),
+        project: orphan.project.clone(),
+        worktree_display: format!("{name}{ORPHAN_SUFFIX}"),
+        is_main: false,
+        is_current: false,
+        git_spans: Vec::new(),
+        pr_spans: Vec::new(),
+        pr_title: String::new(),
+        pr_issues: String::new(),
+        agent_line: Line::default(),
+        has_mux_window: false,
+        age: String::new(),
+        env_text,
+        env_style,
+        is_orphan: true,
+    }
+}
+
+/// Hide PR and Env until their data is available. A hidden column is dropped
+/// unless that would blank the table.
+fn visible_columns(
+    configured: &[WorktreeColumn],
+    show_pr_column: bool,
+    show_env_column: bool,
+) -> Vec<WorktreeColumn> {
     let visible: Vec<_> = configured
         .iter()
         .copied()
         .filter(|column| *column != WorktreeColumn::Pr || show_pr_column)
-        // Env has no data source yet; always hidden for now.
-        .filter(|column| *column != WorktreeColumn::Env)
+        .filter(|column| *column != WorktreeColumn::Env || show_env_column)
         .collect();
     if visible.is_empty() {
         configured.to_vec()
@@ -194,6 +281,9 @@ fn worktree_cell(
     row: &WorktreeRowData,
     palette: &ThemePalette,
 ) -> Cell<'static> {
+    if row.is_orphan {
+        return orphan_cell(column, row, palette);
+    }
     match column {
         WorktreeColumn::Number => {
             Cell::from(row.jump_key.clone()).style(Style::default().fg(palette.keycap))
@@ -205,7 +295,7 @@ fn worktree_cell(
         WorktreeColumn::Pr => Cell::from(format::spans_to_line(row.pr_spans.clone())),
         WorktreeColumn::PrTitle => Cell::from(row.pr_title.clone()),
         WorktreeColumn::PrIssues => Cell::from(row.pr_issues.clone()),
-        WorktreeColumn::Env => Cell::from(""),
+        WorktreeColumn::Env => Cell::from(row.env_text.clone()).style(row.env_style),
         WorktreeColumn::Mux => {
             if row.has_mux_window {
                 Cell::from("\u{25cf}").style(Style::default().fg(palette.success))
@@ -217,6 +307,32 @@ fn worktree_cell(
             Cell::from(row.age.clone()).style(Style::default().fg(palette.dimmed))
         }
         WorktreeColumn::Agent => Cell::from(row.agent_line.clone()),
+    }
+}
+
+/// Cells of an orphan row: dimmed, `(missing)` in the error color, the status
+/// in Env and everything else empty.
+fn orphan_cell(
+    column: WorktreeColumn,
+    row: &WorktreeRowData,
+    palette: &ThemePalette,
+) -> Cell<'static> {
+    let dimmed = Style::default().fg(palette.dimmed);
+    match column {
+        WorktreeColumn::Project => Cell::from(row.project.clone()).style(dimmed),
+        WorktreeColumn::Worktree => {
+            let name = row
+                .worktree_display
+                .strip_suffix(ORPHAN_SUFFIX)
+                .unwrap_or(&row.worktree_display)
+                .to_string();
+            Cell::from(Line::from(vec![
+                Span::styled(name, dimmed),
+                Span::styled(ORPHAN_SUFFIX, Style::default().fg(palette.danger)),
+            ]))
+        }
+        WorktreeColumn::Env => Cell::from(row.env_text.clone()).style(row.env_style),
+        _ => Cell::from(""),
     }
 }
 
@@ -291,6 +407,13 @@ fn build_worktree_table(
     let max_pr_title_width = format::calc_column_width(&pr_titles, 8, 60, 1);
     let pr_issues: Vec<String> = row_data.iter().map(|row| row.pr_issues.clone()).collect();
     let max_pr_issues_width = format::calc_column_width(&pr_issues, 9, 40, 1);
+    let max_env_width = row_data
+        .iter()
+        .map(|row| row.env_text.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(3, 24)
+        + 1;
     let max_agent_width = row_data
         .iter()
         .map(|row| row.agent_line.width())
@@ -312,7 +435,7 @@ fn build_worktree_table(
             WorktreeColumn::PrTitle => Constraint::Length(max_pr_title_width),
             WorktreeColumn::PrIssues if index == last_column => Constraint::Fill(1),
             WorktreeColumn::PrIssues => Constraint::Length(max_pr_issues_width),
-            WorktreeColumn::Env => Constraint::Length(8),
+            WorktreeColumn::Env => Constraint::Length(max_env_width as u16),
             WorktreeColumn::Mux => Constraint::Length(4),
             WorktreeColumn::Age => Constraint::Length(4),
             // Fill only at the end, so columns after Agent stay contiguous.
@@ -354,6 +477,7 @@ pub fn render_worktree_preview(f: &mut Frame, app: &mut App, area: Rect) {
         .worktree_table_state
         .selected()
         .and_then(|idx| app.worktrees.get(idx));
+    let selected_orphan = app.selected_orphan();
 
     // Split preview area into info panel (left) and git log (right)
     let chunks = Layout::horizontal([
@@ -362,8 +486,18 @@ pub fn render_worktree_preview(f: &mut Frame, app: &mut App, area: Rect) {
     ])
     .split(area);
 
-    render_info_panel(f, app, chunks[0], selected_worktree);
-    render_git_log(f, app, chunks[1], selected_worktree);
+    if let Some(orphan) = selected_orphan {
+        render_orphan_info_panel(f, app, chunks[0], orphan);
+    } else {
+        render_info_panel(f, app, chunks[0], selected_worktree);
+    }
+    render_git_log(
+        f,
+        app,
+        chunks[1],
+        selected_worktree,
+        selected_orphan.is_some(),
+    );
 }
 
 /// Title of the info panel. A main checkout's handle is just the repository
@@ -374,6 +508,78 @@ fn info_title(wt: &crate::workflow::types::WorktreeInfo, project: &str) -> Strin
     } else {
         format!(" {} ", wt.handle)
     }
+}
+
+fn env_status_line<'a>(
+    status: &'a InfoStatus,
+    id: Option<&str>,
+    palette: &ThemePalette,
+) -> Line<'a> {
+    let mut spans = vec![
+        Span::styled("Env     ", Style::default().fg(palette.dimmed)),
+        Span::styled(
+            status.label.as_str(),
+            Style::default().fg(tone_color(&status.tone, palette)),
+        ),
+    ];
+    if let Some(id) = id {
+        spans.push(Span::styled(
+            format!(" \u{b7} {}", id.chars().take(8).collect::<String>()),
+            Style::default().fg(palette.dimmed),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn detail_lines<'a>(details: &'a [InfoDetail], palette: &ThemePalette) -> Vec<Line<'a>> {
+    details
+        .iter()
+        .map(|detail| {
+            Line::from(vec![
+                Span::styled(
+                    format!("{:<7} ", detail.label),
+                    Style::default().fg(palette.dimmed),
+                ),
+                Span::styled(detail.value.as_str(), Style::default().fg(palette.text)),
+            ])
+        })
+        .collect()
+}
+
+/// Env section of the info panel for a real worktree with an entry.
+fn env_info_lines<'a>(entry: &'a InfoEntry, palette: &ThemePalette) -> Vec<Line<'a>> {
+    let mut lines = vec![env_status_line(&entry.status, entry.id.as_deref(), palette)];
+    lines.extend(detail_lines(&entry.details, palette));
+    lines
+}
+
+/// Info panel content for an orphan row.
+fn orphan_info_lines<'a>(orphan: &'a OrphanEntry, palette: &ThemePalette) -> Vec<Line<'a>> {
+    let label = Style::default().fg(palette.dimmed);
+    let text = Style::default().fg(palette.text);
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Project ", label),
+            Span::styled(orphan.project.as_str(), text),
+        ]),
+        Line::from(vec![
+            Span::styled("Path    ", label),
+            Span::styled(orphan.path.to_string_lossy().into_owned(), text),
+        ]),
+        env_status_line(&orphan.status, orphan.id.as_deref(), palette),
+    ];
+    lines.extend(detail_lines(&orphan.details, palette));
+    if let Some(hint) = &orphan.hint {
+        lines.push(Line::styled(hint.as_str(), label));
+    }
+    lines
+}
+
+fn render_orphan_info_panel(f: &mut Frame, app: &App, area: Rect, orphan: &OrphanEntry) {
+    let block = format::panel_block(format!(" {}{ORPHAN_SUFFIX} ", orphan.name), &app.palette);
+    let paragraph =
+        Paragraph::new(Text::from(orphan_info_lines(orphan, &app.palette))).block(block);
+    f.render_widget(paragraph, area);
 }
 
 /// Render the info panel showing worktree metadata.
@@ -594,6 +800,11 @@ fn render_info_panel(
     ];
     lines.push(Line::from(mux_spans));
 
+    // Env (external provider)
+    if let Some(entry) = app.worktree_info_index.by_path.get(&wt.path) {
+        lines.extend(env_info_lines(entry, &app.palette));
+    }
+
     let paragraph = Paragraph::new(Text::from(lines)).block(block);
     f.render_widget(paragraph, area);
 }
@@ -604,14 +815,33 @@ fn render_git_log(
     app: &App,
     area: Rect,
     worktree: Option<&crate::workflow::types::WorktreeInfo>,
+    is_orphan: bool,
 ) {
     let block = format::panel_block(" Git Log ", &app.palette);
+    let text = git_log_text(
+        app.worktree_preview.as_deref(),
+        worktree.is_some(),
+        is_orphan,
+        &app.palette,
+    );
+    let paragraph = Paragraph::new(text).block(block);
+    f.render_widget(paragraph, area);
+}
 
-    let text = match (&app.worktree_preview, worktree) {
-        (Some(log), Some(_)) if !log.trim().is_empty() => {
-            let hash_style = Style::default().fg(app.palette.accent);
-            let date_style = Style::default().fg(app.palette.dimmed);
-            let msg_style = Style::default().fg(app.palette.text);
+fn git_log_text<'a>(
+    preview: Option<&'a str>,
+    has_worktree: bool,
+    is_orphan: bool,
+    palette: &ThemePalette,
+) -> Text<'a> {
+    if is_orphan {
+        return Text::styled("(worktree missing)", Style::default().fg(palette.dimmed));
+    }
+    match (preview, has_worktree) {
+        (Some(log), true) if !log.trim().is_empty() => {
+            let hash_style = Style::default().fg(palette.accent);
+            let date_style = Style::default().fg(palette.dimmed);
+            let msg_style = Style::default().fg(palette.text);
 
             let lines: Vec<Line> = log
                 .lines()
@@ -633,13 +863,10 @@ fn render_git_log(
                 .collect();
             Text::from(lines)
         }
-        (None, Some(_)) => Text::raw(""),
-        (Some(_), Some(_)) => Text::raw("(no commits)"),
-        (_, None) => Text::raw(""),
-    };
-
-    let paragraph = Paragraph::new(text).block(block);
-    f.render_widget(paragraph, area);
+        (None, true) => Text::raw(""),
+        (Some(_), true) => Text::raw("(no commits)"),
+        (_, false) => Text::raw(""),
+    }
 }
 
 #[cfg(test)]
@@ -666,7 +893,59 @@ mod tests {
             agent_line: Line::from("working"),
             has_mux_window: true,
             age: "2h".into(),
+            env_text: "-".into(),
+            env_style: Style::default(),
+            is_orphan: false,
         }
+    }
+
+    fn info_status(label: &str, tone: Tone) -> InfoStatus {
+        InfoStatus {
+            label: label.into(),
+            tone,
+        }
+    }
+
+    fn entry(label: &str) -> InfoEntry {
+        InfoEntry {
+            path: "/ws/alpha/wt".into(),
+            status: info_status(label, Tone::Success),
+            id: Some("dd4b4587-0000-4000-8000-000000000000".into()),
+            details: vec![
+                InfoDetail {
+                    label: "backend".into(),
+                    value: "http://127.0.0.1:18600".into(),
+                },
+                InfoDetail {
+                    label: "console".into(),
+                    value: "http://dev-host.example:18601".into(),
+                },
+            ],
+        }
+    }
+
+    fn orphan() -> OrphanEntry {
+        OrphanEntry {
+            project: "alpha".into(),
+            name: "gone".into(),
+            path: "/ws/alpha/gone".into(),
+            status: info_status("unknown", Tone::Warning),
+            id: Some("dd4b4587-0000-4000-8000-000000000000".into()),
+            details: vec![],
+            hint: Some("my-env-tool forget dd4b4587".into()),
+        }
+    }
+
+    fn flat(lines: &[Line]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
     }
 
     fn render(
@@ -743,7 +1022,7 @@ mod tests {
 
     #[test]
     fn worktree_table_preserves_default_layout() {
-        let columns = visible_columns(&DEFAULT_WORKTREE_COLUMNS, true);
+        let columns = visible_columns(&DEFAULT_WORKTREE_COLUMNS, true, false);
         let buffer = render(&columns, vec![row()], 80, None);
         assert_eq!(
             line(&buffer, 0),
@@ -804,7 +1083,7 @@ mod tests {
     #[test]
     fn trailing_agent_fills_after_pr_is_hidden() {
         use WorktreeColumn::*;
-        let columns = visible_columns(&[Agent, Pr], false);
+        let columns = visible_columns(&[Agent, Pr], false, false);
         assert_eq!(columns, [Agent]);
         let mut data = row();
         data.agent_line = Line::from("working").right_aligned();
@@ -816,17 +1095,17 @@ mod tests {
     fn pr_visibility_preserves_order_and_pr_only_fallback() {
         use WorktreeColumn::*;
         assert_eq!(
-            visible_columns(&[Agent, Pr, Worktree], false),
+            visible_columns(&[Agent, Pr, Worktree], false, false),
             [Agent, Worktree]
         );
         assert_eq!(
-            visible_columns(&[Agent, Pr, Worktree], true),
+            visible_columns(&[Agent, Pr, Worktree], true, false),
             [Agent, Pr, Worktree]
         );
-        assert_eq!(visible_columns(&[Pr], false), [Pr]);
+        assert_eq!(visible_columns(&[Pr], false, false), [Pr]);
         let mut data = row();
         data.pr_spans = format_pr_status(None, None, false, 0, &palette());
-        let buffer = render(&visible_columns(&[Pr], false), vec![data], 20, None);
+        let buffer = render(&visible_columns(&[Pr], false, false), vec![data], 20, None);
         assert_eq!(line(&buffer, 0), "PR");
         assert_eq!(line(&buffer, 1), "-");
     }
@@ -872,5 +1151,97 @@ mod tests {
             "long worktree label should survive in a wide pane, got {:?}",
             line(&buffer, 1)
         );
+    }
+
+    #[test]
+    fn env_column_hidden_without_report() {
+        use WorktreeColumn::*;
+        assert_eq!(
+            visible_columns(&[Worktree, Env, Mux], false, false),
+            [Worktree, Mux]
+        );
+        assert_eq!(
+            visible_columns(&[Worktree, Env, Mux], false, true),
+            [Worktree, Env, Mux]
+        );
+        let columns = visible_columns(&DEFAULT_WORKTREE_COLUMNS, true, false);
+        let buffer = render(&columns, vec![row()], 80, None);
+        assert!(!line(&buffer, 0).contains("Env"));
+    }
+
+    #[test]
+    fn env_column_shows_status() {
+        use WorktreeColumn::*;
+        let palette = palette();
+        let mut with_env = row();
+        (with_env.env_text, with_env.env_style) = env_cell(Some(&entry("ready")), &palette);
+        let mut without = row();
+        (without.env_text, without.env_style) = env_cell(None, &palette);
+        let buffer = render(&[Worktree, Env], vec![with_env, without], 40, None);
+        assert_eq!(line(&buffer, 0), "Worktree  Env");
+        assert_eq!(line(&buffer, 1), "wt        \u{25cf} ready");
+        assert_eq!(line(&buffer, 2), "wt        -");
+        assert_eq!(buffer[(10, 1)].fg, palette.success);
+        assert_eq!(buffer[(10, 2)].fg, palette.dimmed);
+    }
+
+    #[test]
+    fn orphan_rows_render_after_worktrees() {
+        use WorktreeColumn::*;
+        let palette = palette();
+        let rows = vec![row(), row(), orphan_row(&orphan(), &palette, 25)];
+        let buffer = render(&[Number, Project, Worktree, Env], rows, 60, None);
+        let l = line(&buffer, 3);
+        assert!(l.contains("alpha"), "{l:?}");
+        assert!(l.contains("gone (missing)"), "{l:?}");
+        assert!(l.contains("unknown"), "{l:?}");
+        assert_eq!(buffer[(0, 3)].symbol(), " ");
+        assert_eq!(buffer[(1, 3)].symbol(), " ");
+        let x = l.find("(missing)").unwrap() as u16;
+        assert_eq!(buffer[(x, 3)].fg, palette.danger);
+        let y = l.find("gone").unwrap() as u16;
+        assert_eq!(buffer[(y, 3)].fg, palette.dimmed);
+    }
+
+    #[test]
+    fn info_panel_env_lines() {
+        let binding = entry("ready");
+        let lines = env_info_lines(&binding, &palette());
+        let text = flat(&lines);
+        assert!(
+            text.contains(&"Env     ready \u{b7} dd4b4587".to_string()),
+            "{text:?}"
+        );
+        assert!(
+            text.contains(&"backend http://127.0.0.1:18600".to_string()),
+            "{text:?}"
+        );
+        assert!(
+            text.contains(&"console http://dev-host.example:18601".to_string()),
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn info_panel_orphan() {
+        let palette = palette();
+        let orphan = orphan();
+        let text = flat(&orphan_info_lines(&orphan, &palette));
+        assert_eq!(text[0], "Project alpha");
+        assert_eq!(text[1], "Path    /ws/alpha/gone");
+        assert_eq!(text[2], "Env     unknown \u{b7} dd4b4587");
+        assert_eq!(text.last().unwrap(), "my-env-tool forget dd4b4587");
+        let log = git_log_text(None, false, true, &palette);
+        assert_eq!(log.lines[0].spans[0].content, "(worktree missing)");
+    }
+
+    #[test]
+    fn tone_colors_follow_the_palette() {
+        let p = palette();
+        assert_eq!(tone_color(&Tone::Success, &p), p.success);
+        assert_eq!(tone_color(&Tone::Warning, &p), p.accent);
+        assert_eq!(tone_color(&Tone::Error, &p), p.danger);
+        assert_eq!(tone_color(&Tone::Info, &p), p.info);
+        assert_eq!(tone_color(&Tone::Muted, &p), p.dimmed);
     }
 }
