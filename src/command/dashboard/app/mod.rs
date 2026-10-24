@@ -36,7 +36,7 @@ const PR_FETCH_INTERVAL: Duration = Duration::from_secs(30);
 use super::scope::ScopeMode;
 use super::settings::{load_hide_stale, load_last_pane_id, load_preview_size};
 use super::sort::{SortMode, WorktreeSortMode};
-use super::worktree_info::{InfoIndex, InfoReport};
+use super::worktree_info::{InfoIndex, InfoReport, OrphanEntry};
 
 /// App state for the TUI
 pub struct App {
@@ -102,6 +102,9 @@ pub struct App {
     pub worktree_info: Option<InfoReport>,
     /// `worktree_info` indexed by canonical path against the listed worktrees.
     pub worktree_info_index: InfoIndex,
+    /// Orphan rows of the current view (project picker and text filter
+    /// applied), shown after the worktree rows.
+    pub visible_orphans: Vec<OrphanEntry>,
     /// Error from the most recent failed provider run (cleared on success).
     pub worktree_info_error: Option<String>,
     is_info_fetching: Arc<AtomicBool>,
@@ -279,6 +282,7 @@ impl App {
             is_project_names_fetching: Arc::new(AtomicBool::new(false)),
             worktree_info: None,
             worktree_info_index: InfoIndex::default(),
+            visible_orphans: Vec::new(),
             worktree_info_error: None,
             is_info_fetching: Arc::new(AtomicBool::new(false)),
             last_info_fetch: None,

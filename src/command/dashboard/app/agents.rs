@@ -27,6 +27,26 @@ pub(crate) struct PaneTarget {
     pub window_name: String,
 }
 
+/// Project name shown for an agent pane: the name of the repository its path
+/// belongs to when known, else the name derived from the path. The Project
+/// column, the project sort and the text filter all use it.
+fn agent_project_name(
+    names: &HashMap<PathBuf, String>,
+    repo_keys: &HashMap<PathBuf, PathBuf>,
+    agent_pane: &AgentPane,
+) -> String {
+    match repo_keys.get(&agent_pane.path) {
+        Some(key) => resolve_project_name(names, key, &agent_pane.path),
+        None => agent::extract_project_name(&agent_pane.path),
+    }
+}
+
+/// Whether an agent matches the text filter (already lowercase) by project
+/// or worktree name.
+fn agent_matches_filter(project: &str, worktree: &str, filter_lower: &str) -> bool {
+    project.to_lowercase().contains(filter_lower) || worktree.to_lowercase().contains(filter_lower)
+}
+
 fn should_close_after_jump(mux_exits_on_jump: bool, close_on_jump: bool) -> bool {
     mux_exits_on_jump && close_on_jump
 }
@@ -41,16 +61,16 @@ impl App {
         if !self.filter_text.is_empty() {
             let filter_lower = self.filter_text.to_lowercase();
             let window_prefix = self.config.window_prefix();
+            let (names, repo_keys) = (&self.project_names, &self.repo_keys);
             self.agents.retain(|a| {
-                let project = Self::extract_project_name(a).to_lowercase();
+                let project = agent_project_name(names, repo_keys, a);
                 let (worktree, _) = agent::extract_worktree_name(
                     &a.session,
                     &a.window_name,
                     window_prefix,
                     &a.path,
                 );
-                let worktree_lower = worktree.to_lowercase();
-                project.contains(&filter_lower) || worktree_lower.contains(&filter_lower)
+                agent_matches_filter(&project, &worktree, &filter_lower)
             });
         }
 
@@ -187,8 +207,13 @@ impl App {
             }
             SortMode::Project => {
                 // Sort by project name first, then by status priority within each project
+                let (names, repo_keys) = (&self.project_names, &self.repo_keys);
                 self.agents.sort_by_cached_key(|a| {
-                    (Self::extract_project_name(a), get_priority(a), pane_num(a))
+                    (
+                        agent_project_name(names, repo_keys, a),
+                        get_priority(a),
+                        pane_num(a),
+                    )
                 });
             }
             SortMode::Recency => {
@@ -515,10 +540,6 @@ impl App {
         )
     }
 
-    pub fn extract_project_name(agent_pane: &AgentPane) -> String {
-        agent::extract_project_name(&agent_pane.path)
-    }
-
     /// Project name for a repository: the workspace-aware name when known,
     /// otherwise derived from the path.
     pub fn project_for(&self, repo_key: &Path, path: &Path) -> String {
@@ -527,10 +548,7 @@ impl App {
 
     /// Project name shown for an agent pane.
     pub fn agent_project(&self, agent_pane: &AgentPane) -> String {
-        match self.repo_keys.get(&agent_pane.path) {
-            Some(key) => self.project_for(key, &agent_pane.path),
-            None => Self::extract_project_name(agent_pane),
-        }
+        agent_project_name(&self.project_names, &self.repo_keys, agent_pane)
     }
 
     /// Get PR info for an agent by looking up its branch in PR statuses
@@ -645,7 +663,48 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::should_close_after_jump;
+    use super::{agent_matches_filter, agent_project_name, should_close_after_jump};
+    use crate::multiplexer::AgentPane;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    fn pane(path: &str) -> AgentPane {
+        AgentPane {
+            session: "s".into(),
+            window_name: "w".into(),
+            pane_id: "%1".into(),
+            window_id: String::new(),
+            window_index: None,
+            path: path.into(),
+            pane_title: None,
+            status: None,
+            status_ts: None,
+            activity_ts: None,
+            updated_ts: None,
+            window_cmd: None,
+            agent_command: None,
+            agent_kind: None,
+            prompt: None,
+        }
+    }
+
+    #[test]
+    fn agent_project_uses_the_shown_name_for_sort_and_filter() {
+        let names = HashMap::from([(PathBuf::from("/ws/k/.git"), "sync/one".to_string())]);
+        let repo_keys = HashMap::from([(
+            PathBuf::from("/ws/sync/one/wt"),
+            PathBuf::from("/ws/k/.git"),
+        )]);
+        let known = pane("/ws/sync/one/wt");
+        let project = agent_project_name(&names, &repo_keys, &known);
+        assert_eq!(project, "sync/one");
+        // The filter matches on the shown name, not the path-derived one.
+        assert!(agent_matches_filter(&project, "wt", "sync/"));
+        assert!(!agent_matches_filter(&project, "wt", "zzz"));
+        // Unknown repository: path-derived name.
+        let unknown = pane("/elsewhere/proj");
+        assert_eq!(agent_project_name(&names, &repo_keys, &unknown), "proj");
+    }
 
     #[test]
     fn jump_closes_only_when_config_and_multiplexer_allow_it() {

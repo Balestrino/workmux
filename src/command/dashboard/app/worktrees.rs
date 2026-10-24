@@ -1,6 +1,6 @@
 //! Worktree tab: navigation, removal, sweep, project picker, and preview.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -73,24 +73,18 @@ fn list_all_repos(
     all
 }
 
-/// Project names keyed by repository key. All main checkouts are named in a
-/// single pass so repositories sharing a first path component are told apart.
-fn names_by_repo_key(
+/// Project names sent with a worktree list. Without workspaces the map is
+/// empty, so every row falls back to the name derived from its own path
+/// (upstream behavior); with workspaces it covers every known repository.
+fn fetched_project_names(
     workspace_dirs: &[PathBuf],
-    worktrees: &[workflow::types::WorktreeInfo],
+    agent_roots: &[PathBuf],
 ) -> HashMap<PathBuf, String> {
-    let mut main_roots: BTreeMap<&PathBuf, &PathBuf> = BTreeMap::new();
-    for wt in worktrees {
-        let entry = main_roots.entry(&wt.repo_key).or_insert(&wt.path);
-        if wt.is_main {
-            *entry = &wt.path;
-        }
+    if workspace_dirs.is_empty() {
+        return HashMap::new();
     }
-    let repos: Vec<(PathBuf, PathBuf)> = main_roots
-        .into_iter()
-        .map(|(key, root)| (key.clone(), root.clone()))
-        .collect();
-    names_for_repos(workspace_dirs, &repos)
+    // Full set even when narrowed, so names do not depend on the view.
+    all_project_names(workspace_dirs, agent_roots)
 }
 
 /// Project names for `(repo_key, main_root)` pairs, keyed by repository key.
@@ -388,21 +382,87 @@ fn jump_target(index: usize, worktree_len: usize) -> Option<usize> {
     (index < worktree_len).then_some(index)
 }
 
-/// Pick the repository an action targets: the project override, else (in all
-/// mode) the selected row, else the dashboard's current worktree, else the
-/// first listed row.
+/// Footer message for a row action whose repository config failed to load.
+fn row_config_error(handle: &str, error: &anyhow::Error) -> String {
+    format!("Cannot load config for '{handle}': {error:#}")
+}
+
+/// Orphan rows shown for the current view: only the selected project's when
+/// the picker narrowed the view, and only those whose project or name
+/// contains the (lowercase) text filter.
+fn filter_orphans(
+    orphans: &[OrphanEntry],
+    project: Option<&str>,
+    filter_text: &str,
+) -> Vec<OrphanEntry> {
+    let filter = filter_text.to_lowercase();
+    orphans
+        .iter()
+        .filter(|o| project.is_none_or(|p| o.project == p))
+        .filter(|o| {
+            filter.is_empty()
+                || o.project.to_lowercase().contains(&filter)
+                || o.name.to_lowercase().contains(&filter)
+        })
+        .cloned()
+        .collect()
+}
+
+/// What the active tab's selection says about the repository to act on.
+#[derive(Debug)]
+enum RepoSelection {
+    /// Worktrees tab: a listed worktree row.
+    Worktree(PathBuf),
+    /// Worktrees tab: an orphan row, which belongs to no repository.
+    Orphan,
+    /// Agents tab: the selected agent's repository root, when known.
+    Agent(Option<PathBuf>),
+    /// Nothing selected.
+    Nothing,
+}
+
+/// Pick the repository an action targets. An orphan row targets nothing.
+/// Otherwise: the project override, else (in all mode) the selection, else
+/// the dashboard's current worktree, else the first listed row. The first
+/// row is not used for an agent selection in all mode: it belongs to an
+/// arbitrary repository the user is not looking at.
 fn choose_repo_path(
     override_path: Option<&PathBuf>,
     all_mode: bool,
-    selected_row_path: Option<PathBuf>,
+    selection: RepoSelection,
     current: Option<PathBuf>,
     first_row_path: Option<PathBuf>,
 ) -> Option<PathBuf> {
+    let (selected, first_row_path) = match selection {
+        RepoSelection::Orphan => return None,
+        RepoSelection::Worktree(path) => (Some(path), first_row_path),
+        RepoSelection::Agent(root) if all_mode => (root, None),
+        RepoSelection::Agent(root) => (root, first_row_path),
+        RepoSelection::Nothing => (None, first_row_path),
+    };
     override_path
         .cloned()
-        .or_else(|| selected_row_path.filter(|_| all_mode))
+        .or_else(|| selected.filter(|_| all_mode))
         .or(current)
         .or(first_row_path)
+}
+
+/// Branches that already have a worktree in the repository `repo_key`.
+/// Without a key (it could not be resolved) every listed worktree counts.
+fn occupied_branches(
+    worktrees: &[workflow::types::WorktreeInfo],
+    repo_key: Option<&Path>,
+) -> HashSet<String> {
+    let target = repo_key.map(canon_or_self);
+    worktrees
+        .iter()
+        .filter(|w| {
+            target
+                .as_ref()
+                .is_none_or(|key| canon_or_self(&w.repo_key) == *key)
+        })
+        .map(|w| w.branch.clone())
+        .collect()
 }
 
 fn remove_worktree(
@@ -540,12 +600,7 @@ impl App {
                 Some(list_all_repos(&config, mux.as_ref(), &roots))
             };
             if let Some(worktrees) = worktrees {
-                let names = if workspace_dirs.is_empty() {
-                    names_by_repo_key(&workspace_dirs, &worktrees)
-                } else {
-                    // Full set even when narrowed, so names do not depend on the view.
-                    all_project_names(&workspace_dirs, &agent_roots)
-                };
+                let names = fetched_project_names(&workspace_dirs, &agent_roots);
                 let _ = tx.send(AppEvent::WorktreeList(worktrees, names));
             }
         });
@@ -577,8 +632,14 @@ impl App {
         let tx = self.event_tx.clone();
         let flag = self.is_project_names_fetching.clone();
         std::thread::spawn(move || {
+            struct ResetFlag(Arc<AtomicBool>);
+            impl Drop for ResetFlag {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::SeqCst);
+                }
+            }
+            let _reset = ResetFlag(flag);
             let names = all_project_names(&workspace_dirs, &agent_roots);
-            flag.store(false, Ordering::SeqCst);
             let _ = tx.send(AppEvent::ProjectNames(names));
         });
     }
@@ -622,13 +683,17 @@ impl App {
         // Sort after filtering
         self.sort_worktrees();
 
+        self.visible_orphans = filter_orphans(
+            &self.worktree_info_index.orphans,
+            self.worktree_project_override
+                .as_ref()
+                .map(|(name, _)| name.as_str()),
+            &self.worktree_filter_text,
+        );
+
         // Restore selection by path (orphan rows follow the real rows)
         if let Some(ref path) = self.selected_worktree_path {
-            let orphan_idx = self
-                .worktree_info_index
-                .orphans
-                .iter()
-                .position(|o| &o.path == path);
+            let orphan_idx = self.visible_orphans.iter().position(|o| &o.path == path);
             if let Some(idx) = self.worktrees.iter().position(|w| &w.path == path) {
                 self.worktree_table_state.select(Some(idx));
             } else if let Some(idx) = orphan_idx {
@@ -636,15 +701,15 @@ impl App {
                     .select(Some(self.worktrees.len() + idx));
             } else {
                 self.selected_worktree_path = None;
-                if self.worktrees.is_empty() {
+                if self.worktree_row_count() == 0 {
                     self.worktree_table_state.select(None);
                 } else {
                     self.worktree_table_state.select(Some(0));
                 }
             }
-        } else if !self.worktrees.is_empty() && self.worktree_table_state.selected().is_none() {
+        } else if self.worktree_row_count() > 0 && self.worktree_table_state.selected().is_none() {
             self.worktree_table_state.select(Some(0));
-            self.selected_worktree_path = self.worktrees.first().map(|w| w.path.clone());
+            self.selected_worktree_path = self.row_path(0);
         }
 
         self.update_worktree_preview();
@@ -652,35 +717,23 @@ impl App {
 
     /// Number of selectable rows: the listed worktrees plus the orphan rows.
     pub fn worktree_row_count(&self) -> usize {
-        self.worktrees.len() + self.worktree_info_index.orphans.len()
+        self.worktrees.len() + self.visible_orphans.len()
     }
 
     /// The orphan row under the selection, if the selection is on one.
     pub fn selected_orphan(&self) -> Option<&OrphanEntry> {
         let selected = self.worktree_table_state.selected()?;
-        match row_kind(
-            selected,
-            self.worktrees.len(),
-            self.worktree_info_index.orphans.len(),
-        ) {
-            RowKind::Orphan(i) => self.worktree_info_index.orphans.get(i),
+        match row_kind(selected, self.worktrees.len(), self.visible_orphans.len()) {
+            RowKind::Orphan(i) => self.visible_orphans.get(i),
             _ => None,
         }
     }
 
     /// Path identifying the row at `index` (worktree or orphan).
     pub fn row_path(&self, index: usize) -> Option<PathBuf> {
-        match row_kind(
-            index,
-            self.worktrees.len(),
-            self.worktree_info_index.orphans.len(),
-        ) {
+        match row_kind(index, self.worktrees.len(), self.visible_orphans.len()) {
             RowKind::Worktree(i) => self.worktrees.get(i).map(|w| w.path.clone()),
-            RowKind::Orphan(i) => self
-                .worktree_info_index
-                .orphans
-                .get(i)
-                .map(|o| o.path.clone()),
+            RowKind::Orphan(i) => self.visible_orphans.get(i).map(|o| o.path.clone()),
             RowKind::None => None,
         }
     }
@@ -845,7 +898,7 @@ impl App {
         let Some(selected) = self.worktree_table_state.selected() else {
             return;
         };
-        let Some(worktree) = self.worktrees.get(selected) else {
+        let Some(worktree) = self.worktrees.get(selected).cloned() else {
             return;
         };
 
@@ -853,7 +906,16 @@ impl App {
             return;
         }
 
-        let prefix = self.config.window_prefix();
+        // The window name prefix comes from the row repository's config.
+        let row_config = match crate::config::Config::load_with_location_from(&worktree.path, None)
+        {
+            Ok((config, _)) => config,
+            Err(e) => {
+                self.set_row_config_error(&worktree.handle, &e);
+                return;
+            }
+        };
+        let prefix = row_config.window_prefix();
         if worktree.mode == crate::config::MuxMode::Window {
             let repo = Some(worktree.path.as_path());
             let target_name = crate::git::get_worktree_target_window_in(&worktree.handle, repo)
@@ -1296,6 +1358,11 @@ impl App {
         self.trigger_worktree_refetch();
     }
 
+    /// Footer message for a row action whose repository config failed to load.
+    fn set_row_config_error(&mut self, handle: &str, error: &anyhow::Error) {
+        self.status_message = Some((row_config_error(handle, error), std::time::Instant::now()));
+    }
+
     /// Open a multiplexer window or session for the selected worktree.
     pub fn open_selected_worktree(&mut self) {
         let Some(selected) = self.worktree_table_state.selected() else {
@@ -1310,21 +1377,32 @@ impl App {
         }
 
         let handle = worktree.handle.clone();
+        let path = worktree.path.clone();
 
-        // Act in the row's repository, not the dashboard's cwd.
-        let Ok((config, location)) =
-            crate::config::Config::load_with_location_from(&worktree.path, None)
-        else {
-            return;
+        // Act in the row's repository, with its configuration, not the
+        // dashboard's cwd.
+        let (config, location) = match crate::config::Config::load_with_location_from(&path, None) {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                self.set_row_config_error(&handle, &e);
+                return;
+            }
         };
-        let Ok(ctx) =
-            workflow::WorkflowContext::new_in(&worktree.path, config, self.mux.clone(), location)
-        else {
-            return;
+        let mode = config.mode();
+        let ctx = match workflow::WorkflowContext::new_in(&path, config, self.mux.clone(), location)
+        {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                self.status_message = Some((
+                    format!("Cannot open '{handle}': {e:#}"),
+                    std::time::Instant::now(),
+                ));
+                return;
+            }
         };
 
         let mut options = workflow::types::SetupOptions::new(false, false, true);
-        options.mode = self.config.mode();
+        options.mode = mode;
         if workflow::open(&handle, &ctx, options, false, None, None, None).is_ok()
             && self.should_close_after_jump()
         {
@@ -1363,22 +1441,49 @@ impl App {
     /// Get the repo path for the current worktree view context.
     fn worktree_repo_path(&self) -> Option<PathBuf> {
         let all_mode = !self.config.dashboard.workspaces().is_empty();
-        let selected_row_path = self
-            .worktree_table_state
-            .selected()
-            .and_then(|i| self.worktrees.get(i))
-            .map(|w| w.path.clone());
         choose_repo_path(
             self.worktree_project_override.as_ref().map(|(_, p)| p),
             all_mode,
-            selected_row_path,
+            self.repo_selection(),
             self.current_worktree.clone(),
             self.worktrees.first().map(|w| w.path.clone()),
         )
     }
 
+    /// The active tab's selection, as far as it identifies a repository.
+    fn repo_selection(&self) -> RepoSelection {
+        match self.active_tab {
+            DashboardTab::Worktrees => {
+                let Some(selected) = self.worktree_table_state.selected() else {
+                    return RepoSelection::Nothing;
+                };
+                match row_kind(selected, self.worktrees.len(), self.visible_orphans.len()) {
+                    RowKind::Worktree(i) => RepoSelection::Worktree(self.worktrees[i].path.clone()),
+                    RowKind::Orphan(_) => RepoSelection::Orphan,
+                    RowKind::None => RepoSelection::Nothing,
+                }
+            }
+            DashboardTab::Agents => {
+                let root = self
+                    .table_state
+                    .selected()
+                    .and_then(|i| self.agents.get(i))
+                    .and_then(|agent| self.repo_roots.get(&agent.path))
+                    .cloned();
+                RepoSelection::Agent(root)
+            }
+        }
+    }
+
     /// Open the add-worktree modal with unified picker (branches pre-fetched).
     pub fn show_add_worktree(&mut self) {
+        if matches!(self.repo_selection(), RepoSelection::Orphan) {
+            self.status_message = Some((
+                "Missing worktree: no repository to add to".to_string(),
+                std::time::Instant::now(),
+            ));
+            return;
+        }
         let Some(repo_path) = self.worktree_repo_path() else {
             self.status_message = Some((
                 "No project context available".to_string(),
@@ -1393,9 +1498,9 @@ impl App {
 
         let default_branch = default_add_worktree_base(&repo_path);
 
-        // Collect branches that already have worktrees
-        let occupied_branches: std::collections::HashSet<String> =
-            self.worktrees.iter().map(|w| w.branch.clone()).collect();
+        // Collect branches that already have worktrees in the target repository
+        let repo_key = git::get_repository_key_in(Some(&repo_path)).ok();
+        let occupied_branches = occupied_branches(&self.worktrees, repo_key.as_deref());
 
         self.pending_add_worktree = Some(AddWorktreeState {
             branches,
@@ -1796,25 +1901,155 @@ mod tests {
 
     #[test]
     fn repo_path_follows_selected_row_in_all_mode() {
+        use RepoSelection::*;
         let b = PathBuf::from("/b/wt");
         let a = PathBuf::from("/a");
         let ov = PathBuf::from("/o");
         assert_eq!(
-            choose_repo_path(None, true, Some(b.clone()), Some(a.clone()), None),
+            choose_repo_path(None, true, Worktree(b.clone()), Some(a.clone()), None),
             Some(b.clone())
         );
         assert_eq!(
-            choose_repo_path(None, false, Some(b.clone()), Some(a.clone()), None),
+            choose_repo_path(None, false, Worktree(b.clone()), Some(a.clone()), None),
             Some(a.clone())
         );
         assert_eq!(
-            choose_repo_path(Some(&ov), true, Some(b), Some(a.clone()), None),
+            choose_repo_path(Some(&ov), true, Worktree(b), Some(a.clone()), None),
             Some(ov)
         );
         assert_eq!(
-            choose_repo_path(None, true, None, Some(a.clone()), None),
+            choose_repo_path(None, true, Nothing, Some(a.clone()), None),
             Some(a)
         );
+    }
+
+    #[test]
+    fn repo_path_is_none_for_an_orphan_row() {
+        let a = PathBuf::from("/a");
+        let first = PathBuf::from("/first");
+        let ov = PathBuf::from("/o");
+        for all_mode in [true, false] {
+            assert_eq!(
+                choose_repo_path(
+                    None,
+                    all_mode,
+                    RepoSelection::Orphan,
+                    Some(a.clone()),
+                    Some(first.clone())
+                ),
+                None
+            );
+        }
+        assert_eq!(
+            choose_repo_path(Some(&ov), true, RepoSelection::Orphan, None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn repo_path_on_agents_tab_follows_the_selected_agent() {
+        use RepoSelection::*;
+        let agent_root = PathBuf::from("/b");
+        let current = PathBuf::from("/a");
+        let first = PathBuf::from("/first");
+        // All mode: the agent's repository, never the Worktrees selection.
+        assert_eq!(
+            choose_repo_path(
+                None,
+                true,
+                Agent(Some(agent_root.clone())),
+                Some(current.clone()),
+                Some(first.clone())
+            ),
+            Some(agent_root.clone())
+        );
+        // Unknown agent repository: the current worktree...
+        assert_eq!(
+            choose_repo_path(
+                None,
+                true,
+                Agent(None),
+                Some(current.clone()),
+                Some(first.clone())
+            ),
+            Some(current.clone())
+        );
+        // ...and not an arbitrary first row.
+        assert_eq!(
+            choose_repo_path(None, true, Agent(None), None, Some(first.clone())),
+            None
+        );
+        // Without workspaces: upstream order (current, then first row).
+        assert_eq!(
+            choose_repo_path(
+                None,
+                false,
+                Agent(Some(agent_root)),
+                None,
+                Some(first.clone())
+            ),
+            Some(first)
+        );
+    }
+
+    #[test]
+    fn occupied_branches_are_those_of_the_target_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let key_a = tmp.path().join("a/.git");
+        let key_b = tmp.path().join("b/.git");
+        std::fs::create_dir_all(&key_a).unwrap();
+        std::fs::create_dir_all(&key_b).unwrap();
+        let mut in_a = worktree("a", "feat-a", false);
+        in_a.repo_key = key_a.clone();
+        let mut in_b = worktree("b", "feat-b", false);
+        in_b.repo_key = key_b.clone();
+        let rows = vec![in_a, in_b];
+
+        let occupied = occupied_branches(&rows, Some(&key_a));
+        assert_eq!(occupied, HashSet::from(["feat-a".to_string()]));
+        // The key is compared after canonicalization.
+        let via_dots = tmp.path().join("b/../a/.git");
+        assert_eq!(
+            occupied_branches(&rows, Some(&via_dots)),
+            HashSet::from(["feat-a".to_string()])
+        );
+        // Unknown target key: every listed worktree counts (upstream).
+        assert_eq!(occupied_branches(&rows, None).len(), 2);
+    }
+
+    #[test]
+    fn orphans_follow_the_picker_and_text_filter() {
+        let orphan = |project: &str, name: &str| OrphanEntry {
+            project: project.into(),
+            name: name.into(),
+            path: format!("/ws/{project}/{name}").into(),
+            status: worktree_info::InfoStatus {
+                label: "gone".into(),
+                tone: worktree_info::Tone::Muted,
+            },
+            id: None,
+            details: vec![],
+            hint: None,
+        };
+        let all = vec![
+            orphan("alpha", "old-env"),
+            orphan("beta", "stale"),
+            orphan("sync/one", "x"),
+        ];
+        let names = |v: Vec<OrphanEntry>| v.into_iter().map(|o| o.name).collect::<Vec<_>>();
+        assert_eq!(names(filter_orphans(&all, None, "")).len(), 3);
+        assert_eq!(names(filter_orphans(&all, Some("beta"), "")), ["stale"]);
+        assert_eq!(names(filter_orphans(&all, Some("sync/one"), "")), ["x"]);
+        // Text filter matches project or name, case-insensitively.
+        assert_eq!(names(filter_orphans(&all, None, "OLD")), ["old-env"]);
+        assert_eq!(names(filter_orphans(&all, None, "bet")), ["stale"]);
+        assert!(filter_orphans(&all, Some("alpha"), "stale").is_empty());
+    }
+
+    #[test]
+    fn row_config_error_names_the_row() {
+        let msg = row_config_error("feat-x", &anyhow::anyhow!("bad yaml"));
+        assert!(msg.contains("feat-x") && msg.contains("bad yaml"), "{msg}");
     }
 
     #[test]
@@ -1855,27 +2090,38 @@ mod tests {
     }
 
     #[test]
-    fn names_by_repo_key_uses_workspace_relative_names() {
+    fn names_for_repos_uses_workspace_relative_names() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().canonicalize().unwrap();
         let a = ws.join("cross/commons");
         let b = ws.join("cross/hermes");
         let c = ws.join("solo/primary-clone");
-        let mut list = Vec::new();
+        let mut repos = Vec::new();
         for (root, key) in [(&a, "ka"), (&b, "kb"), (&c, "kc")] {
             std::fs::create_dir_all(root).unwrap();
-            let mut main = worktree("x", "main", true);
-            main.repo_key = key.into();
-            main.path = root.clone();
-            let mut other = worktree("x", "feat", false);
-            other.repo_key = key.into();
-            list.push(other);
-            list.push(main);
+            repos.push((PathBuf::from(key), root.clone()));
         }
-        let names = names_by_repo_key(&[ws], &list);
+        let names = names_for_repos(&[ws], &repos);
         assert_eq!(names[Path::new("ka")], "cross/commons");
         assert_eq!(names[Path::new("kb")], "cross/hermes");
         assert_eq!(names[Path::new("kc")], "solo");
+    }
+
+    #[test]
+    fn without_workspaces_rows_use_their_own_path_name() {
+        // Sibling layout: alpha/primary-clone (main) + alpha/feat-x (linked).
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("alpha/primary-clone");
+        let linked = tmp.path().join("alpha/feat-x");
+        std::fs::create_dir_all(main.join(".git")).unwrap();
+        std::fs::create_dir_all(&linked).unwrap();
+        std::fs::write(linked.join(".git"), "gitdir: elsewhere\n").unwrap();
+
+        let names = fetched_project_names(&[], std::slice::from_ref(&main));
+        assert!(names.is_empty());
+        let key = main.join(".git");
+        assert_eq!(resolve_project_name(&names, &key, &linked), "feat-x");
+        assert_eq!(resolve_project_name(&names, &key, &main), "primary-clone");
     }
 
     #[test]

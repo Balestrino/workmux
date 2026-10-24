@@ -16,14 +16,19 @@ use serde::{Deserialize, Deserializer};
 /// Maximum time a provider run may take before the child is killed.
 pub const PROVIDER_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Extra time to wait for the output pipe to close after the child exited,
+/// even when the timeout is (almost) used up.
+const OUTPUT_GRACE: Duration = Duration::from_millis(500);
+
 const SCHEMA_VERSION: u32 = 1;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tone {
     Success,
     Warning,
     Error,
     Info,
+    #[default]
     Muted,
 }
 
@@ -43,6 +48,8 @@ impl<'de> Deserialize<'de> for Tone {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct InfoStatus {
     pub label: String,
+    /// A missing tone is `muted`, like an unknown one.
+    #[serde(default)]
     pub tone: Tone,
 }
 
@@ -151,9 +158,13 @@ pub fn run_provider(command: &str, timeout: Duration) -> Result<InfoReport> {
         }
     };
     if !status.success() {
+        // Background processes left by the command must not outlive it.
+        kill_group(&mut child);
         bail!("worktree info command failed ({status})");
     }
-    let remaining = deadline.saturating_duration_since(Instant::now());
+    let remaining = deadline
+        .saturating_duration_since(Instant::now())
+        .max(OUTPUT_GRACE);
     let bytes = match rx.recv_timeout(remaining) {
         Ok(res) => res.context("failed to read command output")?,
         Err(_) => {
@@ -303,6 +314,17 @@ mod tests {
     }
 
     #[test]
+    fn parse_missing_tone_is_muted() {
+        let r = parse_report(
+            r#"{"schemaVersion":1,"worktrees":[{"path":"/a","status":{"label":"x"}},{"path":"/b","status":{"label":"y","tone":"error"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.worktrees.len(), 2);
+        assert_eq!(r.worktrees[0].status.tone, Tone::Muted);
+        assert_eq!(r.worktrees[1].status.tone, Tone::Error);
+    }
+
+    #[test]
     fn parse_ignores_unknown_fields() {
         let r = parse_report(
             r#"{"schemaVersion":1,"extra":1,"worktrees":[{"path":"/a","zzz":true,"status":{"label":"x","tone":"info","more":1}}]}"#,
@@ -363,6 +385,25 @@ mod tests {
     #[test]
     fn run_provider_nonzero_exit() {
         assert!(run_provider("echo '{}'; exit 3", Duration::from_secs(2)).is_err());
+    }
+
+    #[test]
+    fn run_provider_nonzero_exit_kills_background_children() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("survived");
+        let cmd = format!("(sleep 1; touch '{}') & exit 3", marker.display());
+        assert!(run_provider(&cmd, Duration::from_secs(5)).is_err());
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!marker.exists(), "background child outlived a failed run");
+    }
+
+    #[test]
+    fn run_provider_waits_a_grace_period_for_output() {
+        // The command exits at once, but a background child keeps stdout
+        // open past the timeout; the grace period still collects the output.
+        let cmd = r#"printf '{"schemaVersion":1}'; sleep 0.4 &"#;
+        let r = run_provider(cmd, Duration::from_millis(150));
+        assert!(r.is_ok(), "{r:?}");
     }
 
     #[test]

@@ -22,13 +22,18 @@ use super::theme::ThemePalette;
 
 /// Render the worktree table in the given area.
 pub fn render_worktree_table(f: &mut Frame, app: &mut App, area: Rect) {
+    let show_env_column = app.worktree_info.is_some();
+
     // Don't render headers for an empty table - avoids a visual blink
-    // as column widths jump when data arrives on the next frame
-    if app.worktrees.is_empty() {
+    // as column widths jump when data arrives on the next frame. Orphan rows
+    // are selectable, so they keep the table drawn.
+    if !has_rows(
+        app.worktrees.len(),
+        visible_orphan_count(app, show_env_column),
+    ) {
         return;
     }
 
-    let show_env_column = app.worktree_info.is_some();
     let show_check_counts = app.config.dashboard.show_check_counts();
 
     let worktree_max_width = worktree_width_budget(area.width);
@@ -156,8 +161,7 @@ pub fn render_worktree_table(f: &mut Frame, app: &mut App, area: Rect) {
     // Orphan rows (environments whose worktree is gone) follow the real rows.
     if show_env_column {
         row_data.extend(
-            app.worktree_info_index
-                .orphans
+            app.visible_orphans
                 .iter()
                 .map(|orphan| orphan_row(orphan, &app.palette, worktree_max_width)),
         );
@@ -177,6 +181,20 @@ pub fn render_worktree_table(f: &mut Frame, app: &mut App, area: Rect) {
         },
     );
     f.render_stateful_widget(table, area, &mut app.worktree_table_state);
+}
+
+/// Orphan rows drawn for the current view (none without a provider report).
+fn visible_orphan_count(app: &App, show_env_column: bool) -> usize {
+    if show_env_column {
+        app.visible_orphans.len()
+    } else {
+        0
+    }
+}
+
+/// Whether the table has anything to draw: worktree rows or orphan rows.
+fn has_rows(worktree_count: usize, orphan_count: usize) -> bool {
+    worktree_count + orphan_count > 0
 }
 
 struct WorktreeRowData {
@@ -201,7 +219,7 @@ struct WorktreeRowData {
 fn tone_color(tone: &Tone, palette: &ThemePalette) -> Color {
     match tone {
         Tone::Success => palette.success,
-        Tone::Warning => palette.accent,
+        Tone::Warning => palette.warning,
         Tone::Error => palette.danger,
         Tone::Info => palette.info,
         Tone::Muted => palette.dimmed,
@@ -500,10 +518,15 @@ pub fn render_worktree_preview(f: &mut Frame, app: &mut App, area: Rect) {
     );
 }
 
-/// Title of the info panel. A main checkout's handle is just the repository
-/// directory name, so it is shown as `project · branch`.
-fn info_title(wt: &crate::workflow::types::WorktreeInfo, project: &str) -> String {
-    if wt.is_main {
+/// Title of the info panel. With workspaces configured a main checkout's
+/// handle is just the repository directory name, so it is shown as
+/// `project · branch`; otherwise the title is the handle (upstream).
+fn info_title(
+    wt: &crate::workflow::types::WorktreeInfo,
+    project: &str,
+    workspaces_configured: bool,
+) -> String {
+    if wt.is_main && workspaces_configured {
         format!(" {} \u{b7} {} ", project, wt.branch)
     } else {
         format!(" {} ", wt.handle)
@@ -593,7 +616,11 @@ fn render_info_panel(
     let text_style = Style::default().fg(app.palette.text);
 
     let title = if let Some(wt) = worktree {
-        info_title(wt, &app.project_for(&wt.repo_key, &wt.path))
+        info_title(
+            wt,
+            &app.project_for(&wt.repo_key, &wt.path),
+            !app.config.dashboard.workspaces().is_empty(),
+        )
     } else {
         " Info ".to_string()
     };
@@ -1007,9 +1034,49 @@ mod tests {
             created_at: None,
             base_branch: None,
         };
-        assert!(info_title(&wt, "alpha").contains("alpha \u{b7} dev"));
+        assert!(info_title(&wt, "alpha", true).contains("alpha \u{b7} dev"));
         wt.is_main = false;
-        assert_eq!(info_title(&wt, "alpha"), " primary-clone ");
+        assert_eq!(info_title(&wt, "alpha", true), " primary-clone ");
+    }
+
+    #[test]
+    fn info_title_without_workspaces_is_the_handle() {
+        let wt = crate::workflow::types::WorktreeInfo {
+            repo_key: "k/.git".into(),
+            handle: "primary-clone".into(),
+            branch: "dev".into(),
+            path: "/ws/alpha/primary-clone".into(),
+            is_main: true,
+            mode: crate::config::MuxMode::Window,
+            has_mux_window: false,
+            has_unmerged: false,
+            pr_info: None,
+            agent_status: None,
+            created_at: None,
+            base_branch: None,
+        };
+        assert_eq!(info_title(&wt, "alpha", false), " primary-clone ");
+    }
+
+    #[test]
+    fn orphans_alone_keep_the_table_drawn() {
+        assert!(!has_rows(0, 0));
+        assert!(has_rows(0, 1));
+        assert!(has_rows(2, 0));
+        // Orphans only (no worktree rows) still produce a table with a row.
+        let palette = palette();
+        let rows = vec![orphan_row(&orphan(), &palette, 25)];
+        let buffer = render(
+            &[WorktreeColumn::Worktree, WorktreeColumn::Env],
+            rows,
+            40,
+            Some(0),
+        );
+        assert!(
+            line(&buffer, 1).contains("gone (missing)"),
+            "{:?}",
+            line(&buffer, 1)
+        );
     }
 
     fn line(buffer: &Buffer, y: u16) -> String {
@@ -1239,7 +1306,7 @@ mod tests {
     fn tone_colors_follow_the_palette() {
         let p = palette();
         assert_eq!(tone_color(&Tone::Success, &p), p.success);
-        assert_eq!(tone_color(&Tone::Warning, &p), p.accent);
+        assert_eq!(tone_color(&Tone::Warning, &p), p.warning);
         assert_eq!(tone_color(&Tone::Error, &p), p.danger);
         assert_eq!(tone_color(&Tone::Info, &p), p.info);
         assert_eq!(tone_color(&Tone::Muted, &p), p.dimmed);
