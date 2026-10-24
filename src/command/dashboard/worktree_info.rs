@@ -175,22 +175,36 @@ fn canon(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
-/// Index a report by canonical path. The first entry for a path wins. An
-/// orphan whose canonical path matches a known (listed) worktree is attached
-/// to that worktree instead of staying an orphan.
+/// Index a report for lookup by `WorktreeInfo.path`. Matching compares
+/// canonical forms, but an entry that matches an element of `known_paths` is
+/// keyed by that element exactly as passed, so render code can use
+/// `by_path.get(&wt.path)` without canonicalizing. The first entry for a path
+/// wins. An orphan matching a known worktree is attached to it (under the
+/// known path) instead of staying an orphan. Entries matching no known path
+/// are keyed by their canonical path.
 pub fn index_report(report: &InfoReport, known_paths: &[PathBuf]) -> InfoIndex {
-    let known: std::collections::HashSet<PathBuf> = known_paths.iter().map(|p| canon(p)).collect();
+    let mut known: HashMap<PathBuf, &PathBuf> = HashMap::new();
+    for p in known_paths {
+        known.entry(canon(p)).or_insert(p);
+    }
+    let key_for = |path: &Path| -> (PathBuf, bool) {
+        let c = canon(path);
+        match known.get(&c) {
+            Some(k) => ((*k).clone(), true),
+            None => (c, false),
+        }
+    };
     let mut index = InfoIndex::default();
     for entry in &report.worktrees {
         index
             .by_path
-            .entry(canon(&entry.path))
+            .entry(key_for(&entry.path).0)
             .or_insert_with(|| entry.clone());
     }
     for orphan in &report.orphans {
-        let path = canon(&orphan.path);
-        if known.contains(&path) {
-            index.by_path.entry(path).or_insert_with(|| InfoEntry {
+        let (key, matched) = key_for(&orphan.path);
+        if matched {
+            index.by_path.entry(key).or_insert_with(|| InfoEntry {
                 path: orphan.path.clone(),
                 status: orphan.status.clone(),
                 id: orphan.id.clone(),
@@ -211,24 +225,24 @@ mod tests {
   "schemaVersion": 1,
   "worktrees": [
     {
-      "path": "/home/tore/workspaces/orkestra-gaterei/work-linkedin-connector",
+      "path": "/home/user/projects/app/feature-x",
       "status": { "label": "ready", "tone": "success" },
-      "id": "00000000-0000-4000-8000-000000000001",
+      "id": "11111111-aaaa-bbbb-cccc-222222222222",
       "details": [
-        { "label": "backend", "value": "http://127.0.0.1:18600" },
-        { "label": "console", "value": "http://dev-host.example:18601" }
+        { "label": "backend", "value": "http://127.0.0.1:8080" },
+        { "label": "console", "value": "http://dev-host.example:8081" }
       ]
     }
   ],
   "orphans": [
     {
-      "project": "orkestra-commons",
-      "name": "dev-sandbox",
-      "path": "/home/tore/workspaces/orkestra-commons/dev-sandbox",
+      "project": "app",
+      "name": "gone",
+      "path": "/home/user/projects/app/gone",
       "status": { "label": "unknown", "tone": "warning" },
-      "id": "00000000-0000-4000-8000-000000000002",
+      "id": "54d5a60a-0000-1111-2222-333333333333",
       "details": [],
-      "hint": "forget --environment 00000000-0000-4000-8000-000000000002"
+      "hint": "my-env-tool forget 54d5a60a"
     }
   ]
 }"#;
@@ -270,7 +284,7 @@ mod tests {
         assert_eq!(r.orphans.len(), 1);
         assert_eq!(
             r.orphans[0].hint.as_deref(),
-            Some("forget --environment 00000000-0000-4000-8000-000000000002")
+            Some("my-env-tool forget 54d5a60a")
         );
     }
 
@@ -318,10 +332,7 @@ mod tests {
             orphans: vec![orphan(dir.path()), orphan(Path::new("/nope/missing"))],
         };
         let idx = index_report(&report, &[dir.path().to_path_buf()]);
-        assert!(
-            idx.by_path
-                .contains_key(&std::fs::canonicalize(dir.path()).unwrap())
-        );
+        assert!(idx.by_path.contains_key(dir.path()));
         assert_eq!(idx.orphans.len(), 1);
         assert_eq!(idx.orphans[0].path, Path::new("/nope/missing"));
     }
@@ -338,12 +349,7 @@ mod tests {
             orphans: vec![],
         };
         let idx = index_report(&report, std::slice::from_ref(&real));
-        assert_eq!(
-            idx.by_path[&std::fs::canonicalize(&real).unwrap()]
-                .status
-                .label,
-            "ok"
-        );
+        assert_eq!(idx.by_path[&real].status.label, "ok");
     }
 
     #[test]
