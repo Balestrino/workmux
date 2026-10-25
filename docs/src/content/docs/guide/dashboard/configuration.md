@@ -114,7 +114,7 @@ dashboard:
 | `pr`          | Pull request number and check status                            |
 | `pr_title`    | Pull request title                                              |
 | `pr_issues`   | Issues closed by the pull request                               |
-| `base`        | Base branch with the commits ahead and behind (opt-in)          |
+| `base`        | Base branch the diff is computed against (opt-in)               |
 | `env`         | Environment info from `worktree_info_command`                   |
 | `env_id`      | First 8 characters of the reported environment id (opt-in)      |
 | `env:<label>` | Value of the reported detail with that label, such as `env:cpu` |
@@ -125,6 +125,8 @@ dashboard:
 The list sets display order; omitted columns are hidden and duplicates are ignored. An absent or empty list uses the default order. Project configuration overrides the global list, and an explicit empty project list resets it to defaults.
 
 A trailing `agent`, `pr_title`, or `pr_issues` fills the remaining width. Elsewhere it sizes to its content, leaving extra space at the right edge. The `pr` column is hidden until a worktree has a pull request or checks, except when it is the only configured column: like the agents table, it stays visible to avoid an empty table. The opt-in PR metadata columns use the same closing-reference and blank-cell behavior as the Agents table.
+
+The `git` cell reads left to right: `→base` when the base is not `main` or `master`, the committed diff against the base (dimmed), the uncommitted changes after the diff icon (`⚠️` without Nerd Fonts) in bright colors, a conflict or rebase marker, then `↑N` commits not pushed and `↓N` commits to pull from the upstream branch (as of the last fetch). A branch with commits against its base but no upstream shows `no upstream`, since it has never been pushed. The info panel shows the same comparison on its `Remote` line (`↑N ↓N`, `in sync`, `no upstream` or `detached`), under the `Base` line.
 
 The opt-in `base`, `env_id` and `env:<label>` columns put the info panel data in the table. An `env:<label>` column shows the `details` entry whose `label` matches (several entries with the same label are joined with `, `), cut to 32 characters; the header is the label, capitalized, or in capitals when it has three letters or fewer (`env:cpu` is shown as `CPU`). `env_id` and each `env:<label>` column appear only while at least one row has a value. When the table is wider than the pane, these opt-in columns are dropped starting from the last one in the list, so their order is also their priority; the other columns are never dropped. Quote the entries in YAML when in doubt (`"env:cpu"`).
 

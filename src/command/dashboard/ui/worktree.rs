@@ -265,32 +265,69 @@ fn short_id(id: &str) -> String {
     id.chars().take(8).collect()
 }
 
-/// Base cell: the base branch (`main` when unknown, as in the info panel) and
-/// the commits ahead and behind, colored like the panel.
+fn base_name(status: &crate::git::GitStatus) -> &str {
+    if status.base_branch.is_empty() {
+        "main"
+    } else {
+        &status.base_branch
+    }
+}
+
+/// Base cell: only the base branch (`main` when unknown, as in the info panel).
+/// The ahead/behind counts compare with the upstream, not the base, and live
+/// in the Git column.
 fn base_spans(
     status: Option<&crate::git::GitStatus>,
     palette: &ThemePalette,
 ) -> Vec<(String, Style)> {
-    let Some(status) = status else {
-        return Vec::new();
-    };
-    let base = if status.base_branch.is_empty() {
-        "main".to_string()
+    status
+        .map(|status| {
+            vec![(
+                base_name(status).to_string(),
+                Style::default().fg(palette.text),
+            )]
+        })
+        .unwrap_or_default()
+}
+
+/// Info panel `Remote` line: commits ahead and behind the upstream branch, or
+/// why there is nothing to compare with.
+fn remote_spans(status: &crate::git::GitStatus, palette: &ThemePalette) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(
+        "Remote  ",
+        Style::default().fg(palette.dimmed),
+    )];
+    if status.branch.is_none() {
+        spans.push(Span::styled(
+            "detached",
+            Style::default().fg(palette.dimmed),
+        ));
+    } else if !status.has_upstream {
+        spans.push(Span::styled(
+            "no upstream",
+            Style::default().fg(palette.warning),
+        ));
+    } else if status.ahead == 0 && status.behind == 0 {
+        spans.push(Span::styled(
+            "in sync",
+            Style::default().fg(palette.success),
+        ));
     } else {
-        status.base_branch.clone()
-    };
-    let mut spans = vec![(base, Style::default().fg(palette.text))];
-    if status.ahead > 0 {
-        spans.push((
-            format!(" \u{2191}{}", status.ahead),
-            Style::default().fg(palette.info),
-        ));
-    }
-    if status.behind > 0 {
-        spans.push((
-            format!(" \u{2193}{}", status.behind),
-            Style::default().fg(palette.accent),
-        ));
+        if status.ahead > 0 {
+            spans.push(Span::styled(
+                format!("\u{2191}{}", status.ahead),
+                Style::default().fg(palette.info),
+            ));
+        }
+        if status.ahead > 0 && status.behind > 0 {
+            spans.push(Span::raw(" "));
+        }
+        if status.behind > 0 {
+            spans.push(Span::styled(
+                format!("\u{2193}{}", status.behind),
+                Style::default().fg(palette.accent),
+            ));
+        }
     }
     spans
 }
@@ -809,33 +846,12 @@ fn render_info_panel(
     // Git status details (base branch, ahead/behind, diff stats)
     let git_status = app.git_statuses.get(&wt.path);
     if let Some(status) = git_status {
-        // Base branch + ahead/behind
-        let mut base_spans = vec![Span::styled("Base    ", label_style)];
-        if !status.base_branch.is_empty() {
-            base_spans.push(Span::styled(&status.base_branch, text_style));
-        } else {
-            base_spans.push(Span::styled("main", text_style));
-        }
-        if status.ahead > 0 || status.behind > 0 {
-            base_spans.push(Span::styled(" (", label_style));
-            if status.ahead > 0 {
-                base_spans.push(Span::styled(
-                    format!("\u{2191}{}", status.ahead),
-                    Style::default().fg(app.palette.info),
-                ));
-            }
-            if status.ahead > 0 && status.behind > 0 {
-                base_spans.push(Span::styled(" ", label_style));
-            }
-            if status.behind > 0 {
-                base_spans.push(Span::styled(
-                    format!("\u{2193}{}", status.behind),
-                    Style::default().fg(app.palette.accent),
-                ));
-            }
-            base_spans.push(Span::styled(")", label_style));
-        }
-        lines.push(Line::from(base_spans));
+        // Base branch, then the comparison with the upstream branch
+        lines.push(Line::from(vec![
+            Span::styled("Base    ", label_style),
+            Span::styled(base_name(status), text_style),
+        ]));
+        lines.push(Line::from(remote_spans(status, &app.palette)));
 
         // Committed diff stats
         if status.lines_added > 0 || status.lines_removed > 0 {
@@ -1573,7 +1589,7 @@ mod tests {
     }
 
     #[test]
-    fn base_column_shows_branch_and_divergence() {
+    fn base_column_shows_only_the_base_branch() {
         let palette = palette();
         let status = crate::git::GitStatus {
             base_branch: "dev".into(),
@@ -1581,25 +1597,23 @@ mod tests {
             behind: 7,
             ..Default::default()
         };
-        let spans = base_spans(Some(&status), &palette);
-        assert_eq!(
+        let text = |spans: Vec<(String, Style)>| {
             spans
                 .iter()
-                .map(|(text, _)| text.as_str())
-                .collect::<String>(),
-            "dev \u{2191}2 \u{2193}7"
-        );
-        let plain = crate::git::GitStatus::default();
+                .map(|(text, _)| text.clone())
+                .collect::<String>()
+        };
+        assert_eq!(text(base_spans(Some(&status), &palette)), "dev");
         assert_eq!(
-            base_spans(Some(&plain), &palette)
-                .iter()
-                .map(|(text, _)| text.as_str())
-                .collect::<String>(),
+            text(base_spans(
+                Some(&crate::git::GitStatus::default()),
+                &palette
+            )),
             "main"
         );
         assert!(base_spans(None, &palette).is_empty());
         let mut data = row();
-        data.base_spans = spans;
+        data.base_spans = base_spans(Some(&status), &palette);
         let buffer = render(
             &[WorktreeColumn::Worktree, WorktreeColumn::Base],
             vec![data],
@@ -1610,11 +1624,48 @@ mod tests {
             line(&buffer, 0).split_whitespace().collect::<Vec<_>>(),
             ["Worktree", "Base"]
         );
-        assert!(
-            line(&buffer, 1).ends_with("dev \u{2191}2 \u{2193}7"),
-            "{:?}",
-            line(&buffer, 1)
+        assert_eq!(
+            line(&buffer, 1).split_whitespace().collect::<Vec<_>>(),
+            ["wt", "dev"]
         );
+    }
+
+    #[test]
+    fn remote_line_compares_with_the_upstream() {
+        let palette = palette();
+        let text = |status: crate::git::GitStatus| {
+            remote_spans(&status, &palette)
+                .iter()
+                .map(|span| span.content.to_string())
+                .collect::<String>()
+        };
+        let branch = || Some("feat/x".to_string());
+        assert_eq!(
+            text(crate::git::GitStatus {
+                branch: branch(),
+                has_upstream: true,
+                ahead: 2,
+                behind: 7,
+                ..Default::default()
+            }),
+            "Remote  \u{2191}2 \u{2193}7"
+        );
+        assert_eq!(
+            text(crate::git::GitStatus {
+                branch: branch(),
+                has_upstream: true,
+                ..Default::default()
+            }),
+            "Remote  in sync"
+        );
+        assert_eq!(
+            text(crate::git::GitStatus {
+                branch: branch(),
+                ..Default::default()
+            }),
+            "Remote  no upstream"
+        );
+        assert_eq!(text(crate::git::GitStatus::default()), "Remote  detached");
     }
 
     #[test]

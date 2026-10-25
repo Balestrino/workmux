@@ -266,6 +266,21 @@ pub fn format_git_status(
             ));
         }
 
+        // A branch with commits but no upstream has never been pushed, and has
+        // no ↑ to show: say so instead of looking in sync.
+        if !status.has_upstream
+            && status.branch.is_some()
+            && (status.lines_added > 0 || status.lines_removed > 0)
+        {
+            if !spans.is_empty() {
+                spans.push((" ".to_string(), Style::default()));
+            }
+            spans.push((
+                "no upstream".to_string(),
+                Style::default().fg(palette.warning),
+            ));
+        }
+
         if spans.is_empty() {
             vec![("-".to_string(), Style::default().fg(palette.dimmed))]
         } else {
@@ -547,6 +562,72 @@ mod tests {
 
         assert_eq!(format_pr_issues(Some(&pr)), "#308 acme/tracker#12");
         assert_eq!(format_pr_issues(None), "");
+    }
+
+    fn git_text(status: &GitStatus) -> String {
+        let palette = ThemePalette::for_scheme(ThemeScheme::Default, ThemeMode::Dark);
+        format_git_status(Some(status), 0, &palette)
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn git_status_marks_a_branch_with_commits_and_no_upstream() {
+        let palette = ThemePalette::for_scheme(ThemeScheme::Default, ThemeMode::Dark);
+        let status = GitStatus {
+            branch: Some("feat/x".into()),
+            lines_added: 5,
+            ..Default::default()
+        };
+        let spans = format_git_status(Some(&status), 0, &palette);
+        let marker = spans.iter().find(|(text, _)| text == "no upstream");
+        assert_eq!(
+            marker.map(|(_, style)| style.fg),
+            Some(Some(palette.warning)),
+            "{spans:?}"
+        );
+        assert_eq!(git_text(&status), "+5 no upstream");
+    }
+
+    #[test]
+    fn git_status_has_no_upstream_marker_without_commits_or_branch() {
+        let fresh = GitStatus {
+            branch: Some("feat/x".into()),
+            ..Default::default()
+        };
+        assert_eq!(git_text(&fresh), "-");
+        let detached = GitStatus {
+            branch: None,
+            lines_added: 5,
+            ..Default::default()
+        };
+        assert_eq!(git_text(&detached), "+5");
+    }
+
+    #[test]
+    fn git_status_with_upstream_shows_unpushed_commits() {
+        let status = GitStatus {
+            branch: Some("feat/x".into()),
+            has_upstream: true,
+            lines_added: 5,
+            ahead: 2,
+            ..Default::default()
+        };
+        assert_eq!(git_text(&status), "+5 \u{2191}2");
+    }
+
+    #[test]
+    fn git_status_flags_uncommitted_changes_with_a_warning_sign() {
+        let status = GitStatus {
+            branch: Some("feat/x".into()),
+            has_upstream: true,
+            is_dirty: true,
+            lines_added: 3,
+            uncommitted_added: 3,
+            ..Default::default()
+        };
+        assert_eq!(git_text(&status), "\u{26a0}\u{fe0f} +3");
     }
 
     #[test]
