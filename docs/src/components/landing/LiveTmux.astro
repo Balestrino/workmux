@@ -834,7 +834,10 @@
     const c = ch.codePointAt(0)!;
     return c >= 0x1f000 || c === 0x2705 ? 2 : 1;
   };
+  // Text that is all ASCII is one cell per character.
+  const ASCII = /^[\x00-\x7f]*$/;
   const strW = (s: string) => {
+    if (ASCII.test(s)) return s.length;
     let n = 0;
     for (const ch of s) n += cw(ch);
     return n;
@@ -849,14 +852,19 @@
   function fit(line: Line, width: number, bg = ''): Line {
     const out: Line = [];
     let used = 0;
+    const add = (cls: string) => (bg && !hasBg(cls) ? `${cls} ${bg}` : cls);
     for (const s of line) {
       if (used >= width) break;
-      const add = (cls: string) => (bg && !hasBg(cls) ? `${cls} ${bg}` : cls);
       if (!Array.isArray(s)) {
         const w = s.w ?? 1;
         if (used + w > width) break;
         out.push({ ...s, cls: add(s.cls) });
         used += w;
+        continue;
+      }
+      if (used + s[0].length <= width && ASCII.test(s[0])) {
+        if (s[0]) out.push([s[0], add(s[1])]);
+        used += s[0].length;
         continue;
       }
       let txt = '';
@@ -890,6 +898,14 @@
         continue;
       }
       const [txt, cls] = s;
+      if (ASCII.test(txt)) {
+        if (!txt) continue;
+        if (cls !== runCls) flush();
+        runCls = cls;
+        runTxt += txt;
+        runW += txt.length;
+        continue;
+      }
       for (const ch of txt) {
         if (ch.codePointAt(0)! < 0x80) {
           if (cls !== runCls) flush();
@@ -1451,7 +1467,9 @@
     timer = 0;
     visible = false;
     rows: HTMLDivElement[] = [];
-    cache: string[] = [];
+    // Each row's panes as last drawn, so a frame rewrites only the panes
+    // that changed.
+    cache: string[][] = [];
     io?: IntersectionObserver;
     queue: { at: number; fn: () => void }[] = [];
     grouped: Line[] = [];
@@ -2725,10 +2743,15 @@
       ]);
     }
 
-    agentRow(r: number, tr: Line[], cc: Claude): Line {
-      if (cc.ask) return tr[r - 1] ?? [];
+    // The agent pane from its first row down: the transcript's tail, then
+    // the spinner and input box, or the question in their place.
+    agentLines(cc: Claude): Line[] {
+      const tr = this.transcript(cc);
+      if (cc.ask) return tr;
       const input = this.inputLines(cc);
-      const bottom: Line[] = [
+      const top = TRANSCRIPT_ROWS + 1 - input.length;
+      return [
+        ...Array.from({ length: top }, (_, i) => tr[i] ?? []),
         this.spinnerLine(cc),
         [],
         [sp(AG, 'hl lr')],
@@ -2736,11 +2759,10 @@
         [sp(AG, 'hl lr')],
         [sp(2), [cc.spin.on ? 'esc to interrupt' : '? for shortcuts', 'd']],
       ];
-      const top = TRANSCRIPT_ROWS + 1 - input.length;
-      return r <= top ? (tr[r - 1] ?? []) : (bottom[r - top - 1] ?? []);
     }
 
-    shellRow(r: number): Line {
+    // The shell pane from its first row down.
+    shellLines(): Line[] {
       const sh = this.sh;
       const input: Line = [
         ...(sh.input ? shellCmd(sh.input) : shellCmd('').slice(0, 1)),
@@ -2749,7 +2771,7 @@
       const lines: Line[] = sh.busy
         ? sh.lines
         : [...sh.lines, PROMPT_TOP, input];
-      return lines.slice(-(ROWS - 2))[r - 1] ?? [];
+      return lines.slice(-(ROWS - 2));
     }
 
     tileRow(a: Agent, k: number, frame: number, sel: boolean): Line {
@@ -2961,7 +2983,8 @@
       this.drawCaption();
       const frame = Math.floor(this.t / TICK);
       const w = this.wins[this.cur];
-      const tr = w.cc ? this.transcript(w.cc) : [];
+      const agent = w.cc ? this.agentLines(w.cc) : [];
+      const shell = w.kind === 'shell' ? this.shellLines() : [];
       this.grouped = this.groupedSidebar(frame);
       for (let r = 0; r < ROWS; r++) {
         // Each pane is its own fixed-width box, so sub-pixel rounding inside
@@ -2980,7 +3003,7 @@
               : [
                   [fit(this.sidebarRow(r), SB), SB],
                   [[sp(1, 'vl la')], 1],
-                  [fit(this.shellRow(r), MAIN_W), MAIN_W],
+                  [fit(shell[r - 1] ?? [], MAIN_W), MAIN_W],
                 ];
         } else if (r === 0) {
           const right =
@@ -2997,21 +3020,25 @@
           panes = [
             [fit(this.sidebarRow(r), SB), SB],
             [[sp(1, 'vl la')], 1],
-            [fit(w.cc ? this.agentRow(r, tr, w.cc) : [], AG, 'Bag'), AG],
+            [fit(agent[r - 1] ?? [], AG, 'Bag'), AG],
             [[sp(1, cfg && r === 28 ? 'ctr la' : 'vl la')], 1],
             [fit(cfg ? this.rightRow(r) : this.sideRow(w, r), RT), RT],
           ];
         }
-        const h = panes
-          .map(
-            ([line, w]) =>
-              `<span class="rg" style="width:${w}ch">${html(fit(line, w))}</span>`,
-          )
-          .join('');
-        if (h !== this.cache[r]) {
-          this.cache[r] = h;
-          this.rows[r].innerHTML = h;
+        const next = panes.map(
+          ([line, w]) =>
+            `<span class="rg" style="width:${w}ch">${html(fit(line, w))}</span>`,
+        );
+        const prev = this.cache[r];
+        if (prev?.length === next.length) {
+          const els = this.rows[r].children;
+          next.forEach((h, i) => {
+            if (h !== prev[i]) els[i].outerHTML = h;
+          });
+        } else {
+          this.rows[r].innerHTML = next.join('');
         }
+        this.cache[r] = next;
       }
       this.drawMouse();
     }
