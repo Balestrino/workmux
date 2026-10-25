@@ -8,6 +8,10 @@
 //   agent-browser set media dark reduced-motion
 //   agent-browser open <dev server>/dev/social-card/
 //   agent-browser screenshot social-preview.png
+//   sips -s dpiWidth 144 -s dpiHeight 144 social-preview.png
+//
+// The 144 DPI marks the capture as 2x, so image viewers show it at
+// 1280x640 at actual size.
 import LiveTmux from '../../components/landing/LiveTmux.astro';
 import '../../components/landing/fonts.css';
 
