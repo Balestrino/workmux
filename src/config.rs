@@ -320,6 +320,9 @@ pub enum DashboardLayout {
 pub enum AgentColumn {
     /// Jump key of the row, shown under the `#` header.
     Number,
+    /// Agent kind (Claude, Codex, Vibe, ...), from the status hooks or the
+    /// pane command.
+    Agent,
     /// Project name.
     Project,
     /// Worktree name, with a pane suffix for multi-pane windows.
@@ -346,8 +349,9 @@ pub enum AgentColumn {
 }
 
 /// Columns used when the config does not set `dashboard.agent_columns`.
-pub const DEFAULT_AGENT_COLUMNS: [AgentColumn; 8] = [
+pub const DEFAULT_AGENT_COLUMNS: [AgentColumn; 9] = [
     AgentColumn::Number,
+    AgentColumn::Agent,
     AgentColumn::Project,
     AgentColumn::Worktree,
     AgentColumn::Git,
@@ -3949,7 +3953,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 #   merge: "!workmux merge"
 #   layout: stacked # or side_by_side (preview left, table right)
 #   preview_size: 60
-#   agent_columns: [number, project, worktree, git, pr, status, time, title]
+#   agent_columns: [number, agent, project, worktree, git, pr, status, time, title]
 #   worktree_columns: [number, project, worktree, git, pr, env, mux, age, agent]
 #   worktree_extra_columns: ["env:cpu", "env:mem", base, env_id] # inserted after env
 #   sort_mode: priority
@@ -4334,6 +4338,7 @@ mod tests {
             config.dashboard.agent_columns(),
             vec![
                 AgentColumn::Number,
+                AgentColumn::Agent,
                 AgentColumn::Project,
                 AgentColumn::Worktree,
                 AgentColumn::Git,
@@ -4524,6 +4529,20 @@ mod tests {
         let project = dashboard_cfg(|d| d.worktree_info_interval = Some(3));
         let merged = global.merge(project);
         assert_eq!(merged.dashboard.worktree_info_interval, Some(20));
+    }
+
+    #[test]
+    fn agent_columns_default_puts_the_agent_kind_after_the_number() {
+        assert_eq!(
+            DEFAULT_AGENT_COLUMNS[..2],
+            [AgentColumn::Number, AgentColumn::Agent]
+        );
+        let config: Config =
+            serde_yaml::from_str("dashboard:\n  agent_columns: [agent, status]\n").unwrap();
+        assert_eq!(
+            config.dashboard.agent_columns(),
+            vec![AgentColumn::Agent, AgentColumn::Status]
+        );
     }
 
     #[test]

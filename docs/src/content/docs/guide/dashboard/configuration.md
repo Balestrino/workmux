@@ -28,7 +28,7 @@ The `commit` and `merge` values are text sent to the agent's pane. Use the `!` p
 | `merge`                  | `!workmux merge`                                             | Shell command via agent                                                                  |
 | `layout`                 | `stacked`                                                    | `stacked` (table above preview) or `side_by_side` (preview left, table right)            |
 | `preview_size`           | `60`                                                         | Preview height or width as percentage (10-90)                                            |
-| `agent_columns`          | `[number, project, worktree, git, pr, status, time, title]`  | Agents table columns, in display order                                                   |
+| `agent_columns`          | `[number, agent, project, worktree, git, pr, status, time, title]` | Agents table columns, in display order                                                   |
 | `worktree_columns`       | `[number, project, worktree, git, pr, env, mux, age, agent]` | Worktree table columns, in display order                                                 |
 | `worktree_extra_columns` | unset                                                        | Opt-in worktree columns inserted after `env` (see [worktree columns](#worktree-columns)) |
 | `workspaces`             | unset                                                        | Show every git repository one or two levels below these directories (global config only) |
@@ -74,6 +74,7 @@ dashboard:
 | Column      | Content                                          |
 | ----------- | ------------------------------------------------ |
 | `number`    | Jump key of the row, shown under the `#` header  |
+| `agent`     | Agent kind, such as Claude, Codex or Vibe        |
 | `project`   | Project name                                     |
 | `worktree`  | Worktree name, with a pane number when it splits |
 | `git`       | Branch state, staged and unstaged changes        |
@@ -87,6 +88,8 @@ dashboard:
 | `prompt`    | Latest prompt you sent to the agent              |
 
 A column left out of the list is not rendered, so `agent_columns: [worktree, status, title]` gives a table of just those three. Repeating a column has no effect, and an empty list falls back to the default order.
+
+The `agent` column names the agent in its brand color: the kind recorded by the status hooks, otherwise the one recognized from the launch command or the pane's foreground command (`vibe-rs` counts as Vibe). An unrecognized agent shows a dimmed `-`. Builds without this column reject `agent` in `agent_columns`; it is in the default list, so a config that leaves `agent_columns` unset shows it without naming it.
 
 Dropping `number` hides the jump key, and `1`-`9` still jump to the first nine rows. The `pr` column appears only while at least one agent has a pull request or checks to report, wherever it is placed in the list. The opt-in `pr_title` and `pr_issues` columns stay visible and leave the cell blank when the branch has no pull request or closing issues. `pr_issues` uses GitHub's closing issue references, not arbitrary issue mentions in pull request text. Same-repository issues appear as `#123`; cross-repository issues include the repository, such as `owner/repo#123`. The opt-in `window` column shows the tmux window index used by `prefix + <n>`; backends without window indexes leave the cell blank. A trailing `title`, `prompt`, `pr_title`, or `pr_issues` takes the width left over by the other columns; anywhere else it sizes to its content, and the leftover width sits at the right edge of the table.
 

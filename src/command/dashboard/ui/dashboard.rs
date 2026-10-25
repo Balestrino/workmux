@@ -11,7 +11,10 @@ use ratatui::{
 use std::collections::{BTreeMap, HashSet};
 
 use crate::agent_display::strip_oc_title_prefix;
+use crate::agent_identity::{AgentKind, classify_agent_kind};
 use crate::config::AgentColumn;
+use crate::multiplexer::AgentPane;
+use crate::multiplexer::agent::resolve_profile_for_display;
 
 use super::super::app::{App, DashboardTab};
 use super::super::layout::{dashboard_content_areas, dashboard_outer_areas};
@@ -138,6 +141,8 @@ pub fn render_dashboard(f: &mut Frame, app: &mut App) {
 /// applied so every column reads from the same row.
 struct AgentRowData {
     jump_key: String,
+    agent_label: String,
+    agent_color: Option<ratatui::style::Color>,
     project: String,
     worktree_display: String,
     worktree_base: String,
@@ -157,6 +162,7 @@ struct AgentRowData {
 
 /// Auto-sized widths of the agents table columns that size to their content.
 struct AgentColumnWidths {
+    agent: u16,
     project: u16,
     worktree: u16,
     git: u16,
@@ -184,12 +190,41 @@ fn visible_columns(configured: &[AgentColumn], show_pr_column: bool) -> Vec<Agen
     }
 }
 
+/// Kind of the agent in a pane: the kind cached by the status hooks, then the
+/// profile of the launch command, then the pane's foreground command.
+fn agent_kind_of(agent: &AgentPane) -> Option<AgentKind> {
+    agent
+        .agent_kind
+        .as_deref()
+        .and_then(AgentKind::from_str)
+        .or_else(|| {
+            AgentKind::from_str(resolve_profile_for_display(agent.agent_command.as_deref()).name())
+        })
+        .or_else(|| {
+            [agent.window_cmd.as_deref(), agent.agent_command.as_deref()]
+                .into_iter()
+                .flatten()
+                .find_map(|command| classify_agent_kind(Some(command), agent.pane_title.as_deref()))
+                .and_then(|kind| AgentKind::from_str(&kind))
+        })
+}
+
+/// Label and color of the Agent cell; `-` when the kind is unknown.
+fn agent_label(kind: Option<AgentKind>) -> (String, Option<ratatui::style::Color>) {
+    match kind {
+        Some(kind) => (kind.default_label().to_string(), kind.default_color()),
+        None => ("-".to_string(), None),
+    }
+}
+
 /// Build the cell of one configured column for one agent row.
 fn agent_cell(column: AgentColumn, row: &AgentRowData, palette: &ThemePalette) -> Cell<'static> {
     match column {
         AgentColumn::Number => {
             Cell::from(row.jump_key.clone()).style(Style::default().fg(palette.keycap))
         }
+        AgentColumn::Agent => Cell::from(row.agent_label.clone())
+            .style(Style::default().fg(row.agent_color.unwrap_or(palette.dimmed))),
         AgentColumn::Project => Cell::from(row.project.clone()),
         AgentColumn::Worktree => {
             let worktree_style = format::make_row_style(row.is_current, row.is_main, palette);
@@ -263,6 +298,7 @@ fn agent_column_constraints(
         .enumerate()
         .map(|(index, column)| match column {
             AgentColumn::Number => Constraint::Length(2), // jump key
+            AgentColumn::Agent => Constraint::Length(widths.agent), // auto-sized
             AgentColumn::Project => Constraint::Length(widths.project), // auto-sized
             AgentColumn::Worktree => Constraint::Length(widths.worktree), // auto-sized
             AgentColumn::Git => Constraint::Length(widths.git), // auto-sized
@@ -301,6 +337,7 @@ fn build_agent_table(
         .iter()
         .map(|column| match column {
             AgentColumn::Number => format::ResourceHeaderCell::Plain("#"),
+            AgentColumn::Agent => format::ResourceHeaderCell::Plain("Agent"),
             AgentColumn::Project => format::ResourceHeaderCell::Plain("Project"),
             AgentColumn::Worktree => format::ResourceHeaderCell::Plain("Worktree"),
             AgentColumn::Git => format::ResourceHeaderCell::Git,
@@ -394,6 +431,7 @@ fn render_table(f: &mut Frame, app: &mut App, area: Rect) {
                 String::new()
             };
 
+            let (agent_label, agent_color) = agent_label(agent_kind_of(agent));
             let project = app.agent_project(agent);
             let (worktree_name, is_main) = app.extract_worktree_name(agent);
             // Check if this agent corresponds to the current working directory.
@@ -454,6 +492,8 @@ fn render_table(f: &mut Frame, app: &mut App, area: Rect) {
 
             AgentRowData {
                 jump_key,
+                agent_label,
+                agent_color,
                 project,
                 worktree_display,
                 worktree_base,
@@ -535,7 +575,11 @@ fn render_table(f: &mut Frame, app: &mut App, area: Rect) {
     let prompts: Vec<String> = row_data.iter().map(|r| r.prompt.clone()).collect();
     let max_prompt_width = format::calc_column_width(&prompts, 6, 60, 1);
 
+    let agent_labels: Vec<String> = row_data.iter().map(|r| r.agent_label.clone()).collect();
+    let max_agent_width = format::calc_column_width(&agent_labels, 5, 12, 1);
+
     let widths = AgentColumnWidths {
+        agent: max_agent_width,
         project: max_project_width,
         worktree: max_worktree_width,
         git: max_git_width as u16,
@@ -867,6 +911,8 @@ mod tests {
     fn row(palette: &ThemePalette) -> AgentRowData {
         AgentRowData {
             jump_key: "1".to_string(),
+            agent_label: "Codex".to_string(),
+            agent_color: None,
             project: "proj".to_string(),
             worktree_display: "wt".to_string(),
             worktree_base: "wt".to_string(),
@@ -892,6 +938,7 @@ mod tests {
             columns,
             vec![row(&palette)],
             AgentColumnWidths {
+                agent: 6,
                 project: 8,
                 worktree: 9,
                 git: 6,
@@ -925,6 +972,7 @@ mod tests {
 
     fn widths() -> AgentColumnWidths {
         AgentColumnWidths {
+            agent: 6,
             project: 8,
             worktree: 9,
             git: 6,
@@ -1004,7 +1052,7 @@ mod tests {
     fn agents_table_header_follows_column_order() {
         assert_eq!(
             render_line(&crate::config::DEFAULT_AGENT_COLUMNS, 0),
-            "#  Project  Worktree  Git    PR    Status   Time       Title"
+            "#  Agent  Project  Worktree  Git    PR    Status   Time       Title"
         );
         assert_eq!(
             render_line(&REORDERED, 0),
@@ -1016,7 +1064,7 @@ mod tests {
     fn agents_table_rows_follow_column_order() {
         assert_eq!(
             render_line(&crate::config::DEFAULT_AGENT_COLUMNS, 1),
-            "1  proj     wt        +1     #7    work     00:42      the title"
+            "1  Codex  proj     wt        +1     #7    work     00:42      the title"
         );
         assert_eq!(render_line(&REORDERED, 1), "the title    work     1  proj");
     }
@@ -1087,6 +1135,65 @@ mod tests {
         assert_eq!(
             visible_columns(&[AgentColumn::Pr], false),
             vec![AgentColumn::Pr]
+        );
+    }
+
+    fn pane(
+        agent_kind: Option<&str>,
+        window_cmd: Option<&str>,
+        agent_command: Option<&str>,
+    ) -> AgentPane {
+        AgentPane {
+            session: "s".into(),
+            window_name: "w".into(),
+            pane_id: "%1".into(),
+            window_id: String::new(),
+            window_index: None,
+            path: "/tmp".into(),
+            pane_title: None,
+            status: None,
+            status_ts: None,
+            activity_ts: None,
+            updated_ts: None,
+            window_cmd: window_cmd.map(Into::into),
+            agent_command: agent_command.map(Into::into),
+            agent_kind: agent_kind.map(Into::into),
+            prompt: None,
+        }
+    }
+
+    #[test]
+    fn agent_kind_prefers_the_cached_kind_then_the_commands() {
+        use crate::agent_identity::AgentKind;
+        assert_eq!(
+            agent_kind_of(&pane(Some("codex"), Some("node"), None)),
+            Some(AgentKind::Codex)
+        );
+        assert_eq!(
+            agent_kind_of(&pane(None, None, Some("claude --verbose"))),
+            Some(AgentKind::Claude)
+        );
+        assert_eq!(
+            agent_kind_of(&pane(None, Some("vibe-rs"), None)),
+            Some(AgentKind::Vibe)
+        );
+        assert_eq!(
+            agent_kind_of(&pane(Some("unknown"), Some("agy"), None)),
+            Some(AgentKind::Antigravity)
+        );
+        assert_eq!(agent_kind_of(&pane(None, Some("bash"), None)), None);
+    }
+
+    #[test]
+    fn agent_cell_shows_the_label_in_its_color_or_a_dimmed_dash() {
+        use crate::agent_identity::AgentKind;
+        let (label, color) = agent_label(Some(AgentKind::Vibe));
+        assert_eq!(label, "Vibe");
+        assert_eq!(color, AgentKind::Vibe.default_color());
+        assert_eq!(agent_label(None), ("-".to_string(), None));
+        assert_eq!(
+            render_line(&[AgentColumn::Number, AgentColumn::Agent], 1),
+            "1  Codex"
         );
     }
 }
