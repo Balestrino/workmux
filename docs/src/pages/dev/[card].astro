@@ -1,14 +1,13 @@
 ---
 // The social preview image (public/social-preview.png) as a page, served by
 // the dev server only. The live terminal shows its poster frame when motion
-// is reduced, so render it with reduced motion at 1280x640, e.g.
+// is reduced, so capture it with reduced motion at 1280x640 and a device
+// scale of 2, giving a 2560x1280 image, e.g.
 //
 //   agent-browser set viewport 1280 640 2
 //   agent-browser set media dark reduced-motion
 //   agent-browser open <dev server>/dev/social-card/
-//   agent-browser screenshot social-preview@2x.png
-//
-// then scale the capture down to 1280x640.
+//   agent-browser screenshot social-preview.png
 import LiveTmux from '../../components/landing/LiveTmux.astro';
 import '../../components/landing/fonts.css';
 
