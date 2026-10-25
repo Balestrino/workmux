@@ -24,6 +24,8 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
 
 ## v0.1.277 (2026-10-23)
 
+<!-- highlight: Sidebar views -->
+
 - **New!** Scope the sidebar to selected sessions or project directories with `sidebar.views`. Each window shows the view matching its own agent; press `V` or run `workmux sidebar view on|off` to toggle views across all sidebars. See the [sidebar guide](https://workmux.raine.dev/guide/sidebar/#named-views).
 - Fork Pi conversations into new worktrees with `workmux add --fork`. ([#337](https://github.com/raine/workmux/issues/337))
 - Show which project each agent belongs to in `workmux status --all`, plus its tmux session when the session name differs from the project.
