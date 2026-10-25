@@ -1576,7 +1576,15 @@ const ROWS = 36;
         b.innerHTML = '<i></i>';
         b.title = label;
         b.setAttribute('aria-label', `Jump to ${label}`);
-        b.addEventListener('click', () => this.seek(this.marks[i]));
+        // A pointer click seeks to the point under it; keyboard activation
+        // (detail 0) jumps to the chapter's start.
+        b.addEventListener('click', (e) => {
+          const r = b.getBoundingClientRect();
+          const f = e.detail
+            ? Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))
+            : 0;
+          this.seek(this.marks[i] + f * (end - this.marks[i]));
+        });
         box.append(b);
         return b;
       });
