@@ -80,10 +80,6 @@ export default defineConfig({
           tag: "script",
           attrs: { src: "/image-zoom.js", defer: true },
         },
-        {
-          tag: "script",
-          attrs: { src: "/video-player.js", defer: true },
-        },
       ],
       sidebar: [
         {
