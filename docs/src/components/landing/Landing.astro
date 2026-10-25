@@ -1063,8 +1063,10 @@ const wall = testimonials.slice(1);
   }
 
   /* Sections skip rendering while far from the viewport, so each live
-     terminal repaints a short page rather than the whole one. */
-  .w-root > :global(:is(section, footer)) {
+     terminal repaints a short page rather than the whole one. The hero is
+     on screen first and its terminal's shadow spills past its bottom
+     edge, which the paint containment would clip. */
+  .w-root > :global(:is(section:not(.w-hero), footer)) {
     content-visibility: auto;
     contain-intrinsic-size: auto 40rem;
   }
