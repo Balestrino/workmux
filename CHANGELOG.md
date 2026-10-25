@@ -26,7 +26,7 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
 
 <!-- highlight: Sidebar views -->
 
-- **New!** Scope the sidebar to selected sessions or project directories with `sidebar.views`. Each window shows the view matching its own agent; press `V` or run `workmux sidebar view on|off` to toggle views across all sidebars. See the [sidebar guide](https://workmux.raine.dev/guide/sidebar/#named-views).
+- **New!** Scope the sidebar to selected sessions or project directories with `sidebar.views`. Each window shows the view matching its own agent; press `V` or run `workmux sidebar view on|off` to toggle views across all sidebars. See the [sidebar guide](https://workmux.dev/guide/sidebar/#named-views).
 - Fork Pi conversations into new worktrees with `workmux add --fork`. ([#337](https://github.com/raine/workmux/issues/337))
 - UX: Show which project each agent belongs to in `workmux status --all`, plus its tmux session when the session name differs from the project.
 - UX: Keep finished agents out of the sidebar's stale section until you review them.
@@ -91,7 +91,7 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
 
 ## v0.1.265 (2026-09-22)
 
-- New! Group the sidebar by project or tmux session and fold away stale agents, off by default. See the [sidebar guide](https://workmux.raine.dev/guide/sidebar/#grouping).
+- New! Group the sidebar by project or tmux session and fold away stale agents, off by default. See the [sidebar guide](https://workmux.dev/guide/sidebar/#grouping).
 - Sort sidebar agents by attention needed with `sidebar.sort: priority`, placing waiting and done agents first. ([#285](https://github.com/raine/workmux/issues/285), [#289](https://github.com/raine/workmux/pull/289))
 - UX: Show the pull request number beside its check status in the sidebar's default templates. ([#289](https://github.com/raine/workmux/pull/289))
 - Fix terminal resizing making tmux temporarily unresponsive when many windows have sidebars.
@@ -105,7 +105,7 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
 - Fix the sidebar failing to start on macOS when long temporary or custom tmux socket paths exceed Unix socket limits. ([#293](https://github.com/raine/workmux/issues/293))
 - Fix: Keep Pi panes marked as working throughout automatic compaction when delegated activity tracking is enabled, preserving the elapsed timer until the continuation finishes.
 - UX: Enable the fast `node_modules` cleanup on worktree removal in monorepos where the lockfile lives in a subdirectory, such as `dashboard/pnpm-lock.yaml`, instead of only at the project root.
-- UX: Keep the fast `node_modules` cleanup when a project defines its own `pre_remove` commands by listing `"<cleanup-node-modules>"` among them. Previously any `pre_remove` entry replaced the cleanup entirely. See the [lifecycle hooks guide](https://workmux.raine.dev/guide/configuration#lifecycle-hooks)
+- UX: Keep the fast `node_modules` cleanup when a project defines its own `pre_remove` commands by listing `"<cleanup-node-modules>"` among them. Previously any `pre_remove` entry replaced the cleanup entirely. See the [lifecycle hooks guide](https://workmux.dev/guide/configuration#lifecycle-hooks)
 
 ## v0.1.263 (2026-09-16)
 
@@ -443,7 +443,7 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
 
 - Add `workmux rebase` to rebase a worktree onto its saved base branch, with automatic fallback to the configured main branch.
 - Add `workmux sidebar --position <left|top>` to choose sidebar placement when enabling the sidebar.
-- Add structured [named agent profiles](https://workmux.raine.dev/guide/agents#named-agents) with separate `type`, `command`, `args`, and `env` fields, including `from_env` values and `<agent:name>` pane placeholders.
+- Add structured [named agent profiles](https://workmux.dev/guide/agents#named-agents) with separate `type`, `command`, `args`, and `env` fields, including `from_env` values and `<agent:name>` pane placeholders.
 - Fix: Keep named agent profiles stable across repeated launches, so profile commands and arguments are not mutated between runs.
 - Fix: Preserve the current tmux focus when merging a worktree from an inactive window.
 - UX: Place new tmux windows beside the current window for more predictable navigation.
@@ -544,7 +544,7 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
 
 ## v0.1.194 (2026-05-01)
 
-- Add `WORKMUX_DISABLE_SET_WINDOW_STATUS=1` to let nested agents skip status hook updates when launched from inside another agent pane. See the [status tracking guide](https://workmux.raine.dev/guide/status-tracking)
+- Add `WORKMUX_DISABLE_SET_WINDOW_STATUS=1` to let nested agents skip status hook updates when launched from inside another agent pane. See the [status tracking guide](https://workmux.dev/guide/status-tracking)
 
 ## v0.1.191 (2026-04-30)
 
@@ -553,7 +553,7 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
 
 ## v0.1.190 (2026-04-29)
 
-- Add sidebar template customization, letting you choose which labels, git stats, timers, and status details appear in compact and tile layouts. See the [sidebar customization guide](https://workmux.raine.dev/guide/sidebar/customization)
+- Add sidebar template customization, letting you choose which labels, git stats, timers, and status details appear in compact and tile layouts. See the [sidebar customization guide](https://workmux.dev/guide/sidebar/customization)
 - Add customizable per-agent sidebar icons and colors, with built-in defaults for Claude, Codex, OpenCode, Gemini, Pi, Kiro, Vibe, and Copilot
 - Support tmux-style colors and attributes inside sidebar templates
 - UX: Improve sidebar rendering for git stats, elapsed time, row highlighting, and synchronized width across windows
@@ -778,7 +778,7 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
 - Add `sidebar`: an always-visible agent status panel in a tmux side pane,
   showing live status, git diff stats, and elapsed timers for all agents across
   windows. Toggle with `workmux sidebar`. See the
-  [sidebar guide](https://workmux.raine.dev/guide/sidebar/)
+  [sidebar guide](https://workmux.dev/guide/sidebar/)
   - Two layout modes: tiles (default) and compact, switchable with `v` or via
     `sidebar.layout` in config
   - Click, scroll, or use keyboard navigation (`j`/`k`/`Enter`) to jump between
@@ -1041,7 +1041,7 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
 - Added experimental Zellij backend support. Zellij is auto-detected when
   running inside a Zellij session. Requires Zellij built from source (uses
   unreleased features). See the
-  [Zellij guide](https://workmux.raine.dev/guide/zellij) for details and known
+  [Zellij guide](https://workmux.dev/guide/zellij) for details and known
   limitations (contributed by [@Infonautica](https://github.com/Infonautica))
 
 ## v0.1.123 (2026-02-24)
@@ -1107,7 +1107,7 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
 - Added sandbox support for running agents in isolated environments. Two
   backends: containers (Docker/Podman) for ephemeral sessions, and Lima VMs for
   persistent machines with built-in Nix/Devbox toolchain support. See the
-  [sandbox guide](https://workmux.raine.dev/guide/sandbox/) for setup.
+  [sandbox guide](https://workmux.dev/guide/sandbox/) for setup.
 
 ## v0.1.111 (2026-02-12)
 
@@ -1184,7 +1184,7 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
   filesystem-based JSON storage, laying the groundwork for multi-backend support
 - Added experimental WezTerm backend support. workmux auto-detects the backend
   from environment variables. See the
-  [WezTerm guide](https://workmux.raine.dev/guide/wezterm) for setup
+  [WezTerm guide](https://workmux.dev/guide/wezterm) for setup
   instructions. (contributed by [@JeremyBYU](https://github.com/JeremyBYU))
 - UX: New worktrees now automatically get a symlink to a gitignored
   `CLAUDE.local.md` from your main worktree, so your local Claude Code
@@ -1249,7 +1249,7 @@ editUrl: https://github.com/raine/workmux/edit/main/CHANGELOG.md
 
 ## v0.1.93 (2026-01-15)
 
-- Added Nix flake (https://workmux.raine.dev/guide/nix)
+- Added Nix flake (https://workmux.dev/guide/nix)
 - Fixed bash completion not passing arguments to the fallback completion
   function
 

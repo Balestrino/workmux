@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://workmux.raine.dev/"><strong>📖 Documentation</strong></a> ·
+  <a href="https://workmux.dev/"><strong>📖 Documentation</strong></a> ·
   <a href="#installation">Install</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#commands">Commands</a> ·
@@ -28,9 +28,9 @@ parallel without conflict.
 windowing, git for worktrees, your agent for coding - workmux ties them together.
 
 <sup><sub>\* Also supports
-<a href="https://workmux.raine.dev/guide/kitty">kitty</a>,
-<a href="https://workmux.raine.dev/guide/wezterm">WezTerm</a>, and
-<a href="https://workmux.raine.dev/guide/zellij">Zellij</a> as alternative
+<a href="https://workmux.dev/guide/kitty">kitty</a>,
+<a href="https://workmux.dev/guide/wezterm">WezTerm</a>, and
+<a href="https://workmux.dev/guide/zellij">Zellij</a> as alternative
 backends.</sub></sup>
 
 📖 **New to workmux?** Read the
@@ -79,7 +79,7 @@ New to worktrees? See [Why git worktrees?](#why-git-worktrees)
   one command (`merge`)
 - [Dashboard](#workmux-dashboard) for monitoring agents, reviewing changes, and
   sending commands
-- [Sidebar](https://workmux.raine.dev/guide/sidebar/) for a persistent,
+- [Sidebar](https://workmux.dev/guide/sidebar/) for a persistent,
   at-a-glance view of all agents across tmux windows
 - [Delegate tasks to worktree agents](#delegating-tasks-with-worktree) with the
   `/worktree` skill
@@ -157,7 +157,7 @@ for a demo, check them out.
 ## Installation
 
 **Official sources:** [github.com/raine/workmux](https://github.com/raine/workmux)
-and [workmux.raine.dev](https://workmux.raine.dev/). This project is not affiliated
+and [workmux.dev](https://workmux.dev/). This project is not affiliated
 with workmux.com.
 
 ### Bash YOLO
@@ -187,7 +187,7 @@ cargo install workmux
 mise use -g cargo:raine/workmux
 ```
 
-**Nix** ([flake and home-manager setup](https://workmux.raine.dev/guide/nix)):
+**Nix** ([flake and home-manager setup](https://workmux.dev/guide/nix)):
 
 ```bash
 nix profile install github:raine/workmux
@@ -259,7 +259,7 @@ workmux uses a two-level configuration system:
 Project settings override global settings. When you run workmux from a
 subdirectory, it walks upward to find the nearest `.workmux.yaml`, allowing
 nested configs for monorepos. See the
-[Monorepos guide](https://workmux.raine.dev/guide/monorepos#nested-configuration)
+[Monorepos guide](https://workmux.dev/guide/monorepos#nested-configuration)
 for details. For hook lists (`post_create`, `pre_merge`, `pre_remove`) and file
 operation lists (`files.copy`, `files.symlink`), you can use `"<global>"` to
 include global values alongside project-specific ones. Other settings like
@@ -325,11 +325,11 @@ customize.
 | `default_session`  | Session to return to when a workmux session closes (session mode)                                     | Previous session            |
 | `window_placement` | New tmux window placement (`after_current` or `rightmost`)                                            | `after_current`             |
 | `agent`            | Default agent for `<agent>` placeholder                                                               | `claude`                    |
-| `agents`         | Named agent commands ([docs](https://workmux.raine.dev/guide/agents#named-agents), global-only)       | `{}`                        |
+| `agents`         | Named agent commands ([docs](https://workmux.dev/guide/agents#named-agents), global-only)       | `{}`                        |
 | `merge_strategy`           | Default merge strategy (`merge`, `rebase`, `squash`)                                                  | `merge`                     |
 | `merge_keep`               | Keep resources after `workmux merge` by default                                                       | `false`                     |
 | `confirm_unmerged_removal` | Confirm before deleting branches with commits not merged into their base                               | `true`                      |
-| `theme`                    | Dashboard color scheme ([custom colors](https://workmux.raine.dev/guide/configuration#custom-colors)) | `default` (auto dark/light) |
+| `theme`                    | Dashboard color scheme ([custom colors](https://workmux.dev/guide/configuration#custom-colors)) | `default` (auto dark/light) |
 
 Set `base_branch: auto` to create independent work streams from each repository's
 effective main branch. Workmux uses configured `main_branch`, then the local
@@ -474,7 +474,7 @@ all worktrees at once.
 Run commands at specific points in the worktree lifecycle, such as installing
 dependencies or running database migrations. All hooks run with the **worktree
 directory** as the working directory (or the nested config directory for
-[nested configs](https://workmux.raine.dev/guide/monorepos#nested-configuration))
+[nested configs](https://workmux.dev/guide/monorepos#nested-configuration))
 and receive environment variables: `WM_HANDLE`, `WM_WORKTREE_PATH`,
 `WM_PROJECT_ROOT`, `WM_CONFIG_DIR`.
 
@@ -2023,7 +2023,7 @@ after they exit.
 ### `workmux sandbox`
 
 Commands for managing sandbox functionality. See the
-[sandbox guide](https://workmux.raine.dev/guide/sandbox/) for full
+[sandbox guide](https://workmux.dev/guide/sandbox/) for full
 documentation.
 
 | Command               | Description                                            |
@@ -2215,7 +2215,7 @@ limitations in the Copilot CLI hooks implementation.
 terminal `Stop` event marks it done.
 
 **OpenCode**: run `workmux setup --hooks`. For manual installation, see the
-[OpenCode setup guide](https://workmux.raine.dev/guide/status-tracking/#opencode-setup).
+[OpenCode setup guide](https://workmux.dev/guide/status-tracking/#opencode-setup).
 V2 status tracking requires the terminal UI; headless `opencode run` is not tracked.
 
 **Oh My Pi**: copy the workmux status extension to your global OMP extensions directory:
@@ -2338,7 +2338,7 @@ Both backends support:
 - **Network restrictions** (container only): Block outbound connections except
   to approved domains
 
-See the [sandbox guide](https://workmux.raine.dev/guide/sandbox/) for full
+See the [sandbox guide](https://workmux.dev/guide/sandbox/) for full
 setup, configuration, and security details.
 
 ## Session mode
@@ -2716,7 +2716,7 @@ Each worktree now gets unique ports derived from its name, allowing multiple
 instances to run simultaneously without conflicts. The `.env` file stays
 untouched, and `.env.local` is gitignored.
 
-See the [Monorepos guide](https://workmux.raine.dev/guide/monorepos) for
+See the [Monorepos guide](https://workmux.dev/guide/monorepos) for
 alternative approaches using direnv.
 
 ### Symlinks and `.gitignore` trailing slashes
@@ -2790,7 +2790,7 @@ to `.gitignore`:
 
 **Named agent profiles**
 
-Define [named agents](https://workmux.raine.dev/guide/agents#named-agents) in
+Define [named agents](https://workmux.dev/guide/agents#named-agents) in
 your global config when an agent needs a wrapper command, extra arguments, or
 environment variables. Simple string aliases still work:
 
@@ -2845,7 +2845,7 @@ profiles support `command`, `args`, `env`, and `type` fields.
 
 ### Delegating tasks with `/worktree`
 
-The `/worktree` [skill](https://workmux.raine.dev/guide/skills) lets you
+The `/worktree` [skill](https://workmux.dev/guide/skills) lets you
 delegate tasks to parallel worktree agents directly from your conversation. A
 main agent on the main branch can act as a coordinator: planning work and
 spinning up worktree agents for each task.
@@ -2862,7 +2862,7 @@ detailed walkthrough of the workflow.
 > /worktree Add dark mode, Implement caching  # multiple tasks
 ```
 
-See the [Skills guide](https://workmux.raine.dev/guide/skills) for more skills
+See the [Skills guide](https://workmux.dev/guide/skills) for more skills
 including `/merge`, `/rebase`, `/coordinator`, and `/open-pr`.
 
 ## Shell completions
@@ -2899,13 +2899,13 @@ workmux completions fish | source
 While tmux is the primary and recommended backend, workmux also supports
 alternative terminal multiplexers:
 
-- **[WezTerm](https://workmux.raine.dev/guide/wezterm)** (experimental) - For
+- **[WezTerm](https://workmux.dev/guide/wezterm)** (experimental) - For
   users who prefer WezTerm's features. Thanks to
   [@JeremyBYU](https://github.com/JeremyBYU) for contributing this backend.
-- **[kitty](https://workmux.raine.dev/guide/kitty)** (experimental) - For users
+- **[kitty](https://workmux.dev/guide/kitty)** (experimental) - For users
   who prefer kitty terminal. Requires `allow_remote_control` and `listen_on`
   configuration.
-- **[Zellij](https://workmux.raine.dev/guide/zellij)** (experimental) - For
+- **[Zellij](https://workmux.dev/guide/zellij)** (experimental) - For
   users who prefer Zellij. Detected automatically via `$ZELLIJ`.
 
 workmux auto-detects the backend from environment variables (`$TMUX`,
