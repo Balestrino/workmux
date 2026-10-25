@@ -9,7 +9,6 @@ import {
   videos,
   workflows,
 } from './data';
-import sandboxShot from '../../assets/screenshots/sandbox-claude.webp';
 import v1 from '../../assets/videos/ww1wykxJps8.webp';
 import v2 from '../../assets/videos/7uumknh43rM.webp';
 import v3 from '../../assets/videos/0RGyt3EDP-E.webp';
@@ -18,6 +17,7 @@ import HowItWorks from './HowItWorks.astro';
 import LiveTmux from './LiveTmux.astro';
 import LiveDashboard from './LiveDashboard.astro';
 import LiveSidebar from './LiveSidebar.astro';
+import LiveSandbox from './LiveSandbox.astro';
 
 const videoThumbs = [v1, v2, v3];
 const methods = ['brew', 'curl', 'cargo'].map((id) =>
@@ -355,13 +355,12 @@ const wall = testimonials.slice(1);
           keys, credentials and files stay outside.
         </p>
         <a class="w-arrow" href="/guide/sandbox/">Sandbox guide →</a>
-        <div class="w-frame w-card-shot">
-          <Image
-            src={sandboxShot}
-            alt="An agent running inside a workmux sandbox"
-            widths={[600, 1000]}
-            sizes="(max-width: 60rem) 100vw, 34rem"
-          />
+        <div class="w-frame w-card-live">
+          <div class="w-titlebar" aria-hidden="true">
+            <span class="w-lights"><i></i><i></i><i></i></span>
+            <span class="w-title">~/code/api__worktrees/auth-refresh</span>
+          </div>
+          <LiveSandbox />
         </div>
       </article>
     </div>
@@ -1233,7 +1232,7 @@ const wall = testimonials.slice(1);
     margin: 0 0 1rem;
   }
 
-  .w-card-shot {
+  .w-card-live {
     align-self: stretch;
     margin-top: 1.75rem;
     box-shadow: none;
