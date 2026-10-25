@@ -1,6 +1,10 @@
 ---
 // A live tmux session rendered as a character grid: the workmux sidebar,
 // agent windows, and worktrees created with workmux add and /worktree.
+
+// Rendered empty so the frame has its full height before the script runs;
+// must match ROWS in the script.
+const ROWS = 36;
 ---
 
 <live-tmux class="lt">
@@ -9,6 +13,7 @@
     role="img"
     aria-label="A tmux session with the workmux sidebar: worktrees are created with workmux add and an agent's /worktree skill, an agent's question is answered from the sidebar, and finished work is merged with /merge, which closes its window"
   >
+    {Array.from({ length: ROWS }, () => <div class="r" />)}
   </div>
   <div class="lt-cap" aria-hidden="true"></div>
   <div class="lt-chapters"></div>
@@ -1517,13 +1522,7 @@
 
     connectedCallback() {
       const grid = this.querySelector('.lt-grid')!;
-      grid.textContent = '';
-      for (let r = 0; r < ROWS; r++) {
-        const row = document.createElement('div');
-        row.className = 'r';
-        grid.append(row);
-        this.rows.push(row);
-      }
+      this.rows = [...grid.querySelectorAll<HTMLDivElement>(':scope > .r')];
       this.pointer = document.createElement('div');
       this.pointer.className = 'lt-mouse';
       this.pointer.innerHTML = POINTER;
