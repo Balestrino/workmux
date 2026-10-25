@@ -535,6 +535,7 @@ fn git_status_semantically_equal(a: &GitStatus, b: &GitStatus) -> bool {
         branch: _,
         has_upstream: _,
         is_rebasing: _,
+        outside_repository: _,
     } = a;
 
     a.ahead == b.ahead
@@ -549,6 +550,7 @@ fn git_status_semantically_equal(a: &GitStatus, b: &GitStatus) -> bool {
         && a.branch == b.branch
         && a.has_upstream == b.has_upstream
         && a.is_rebasing == b.is_rebasing
+        && a.outside_repository == b.outside_repository
 }
 
 /// Find which worktrees are affected by a filesystem event at the given path.

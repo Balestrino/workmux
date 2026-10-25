@@ -164,6 +164,10 @@ pub fn format_git_status(
     let icons = nerdfont::git_icons();
 
     if let Some(status) = status {
+        // Not a repository at all: nothing to report, and not "dirty".
+        if status.outside_repository {
+            return vec![("?".to_string(), Style::default().fg(palette.dimmed))];
+        }
         let mut spans: Vec<(String, Style)> = Vec::new();
         let has_uncommitted =
             status.uncommitted_added > 0 || status.uncommitted_removed > 0 || status.is_dirty;
@@ -628,6 +632,21 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(git_text(&status), "\u{26a0}\u{fe0f} +3");
+    }
+
+    #[test]
+    fn git_status_outside_a_repository_is_a_dimmed_question_mark() {
+        let palette = ThemePalette::for_scheme(ThemeScheme::Default, ThemeMode::Dark);
+        let status = GitStatus {
+            outside_repository: true,
+            is_dirty: true,
+            ..Default::default()
+        };
+        let spans = format_git_status(Some(&status), 0, &palette);
+        assert_eq!(
+            spans,
+            vec![("?".to_string(), Style::default().fg(palette.dimmed))]
+        );
     }
 
     #[test]

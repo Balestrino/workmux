@@ -422,7 +422,10 @@ fn collect_status(
                     .entries
                     .remove(&path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
             }
-            return failure();
+            return GitStatus {
+                outside_repository: true,
+                ..failure()
+            };
         }
     };
     let root = identity.worktree.clone();
@@ -637,6 +640,19 @@ mod tests {
             )
         );
         actual
+    }
+
+    #[test]
+    fn a_directory_outside_any_repository_is_flagged_and_stays_conservatively_dirty() {
+        let temp = tempfile::tempdir().unwrap();
+        let status = get_git_status(temp.path(), Some("main"));
+        assert!(status.outside_repository);
+        assert!(
+            status.is_dirty,
+            "removal checks keep treating it as possibly dirty"
+        );
+        let inside = get_git_status(repo().path(), Some("main"));
+        assert!(!inside.outside_repository);
     }
 
     #[test]

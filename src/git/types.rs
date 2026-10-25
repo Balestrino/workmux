@@ -53,4 +53,8 @@ pub struct GitStatus {
     /// Whether a rebase is currently in progress
     #[serde(default)]
     pub is_rebasing: bool,
+    /// The path is not inside any git repository. `is_dirty` stays set so
+    /// removal checks remain conservative; displays show `?` instead.
+    #[serde(default)]
+    pub outside_repository: bool,
 }
