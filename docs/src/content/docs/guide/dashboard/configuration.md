@@ -30,6 +30,7 @@ The `commit` and `merge` values are text sent to the agent's pane. Use the `!` p
 | `preview_size`           | `60`                                                         | Preview height or width as percentage (10-90)                                            |
 | `agent_columns`          | `[number, project, worktree, git, pr, status, time, title]`  | Agents table columns, in display order                                                   |
 | `worktree_columns`       | `[number, project, worktree, git, pr, env, mux, age, agent]` | Worktree table columns, in display order                                                 |
+| `worktree_extra_columns` | unset                                                        | Opt-in worktree columns inserted after `env` (see [worktree columns](#worktree-columns)) |
 | `workspaces`             | unset                                                        | Show every git repository one or two levels below these directories (global config only) |
 | `worktree_info_command`  | unset                                                        | Command printing per-worktree environment info as JSON (global config only)              |
 | `worktree_info_interval` | `15`                                                         | Seconds between runs of the info command, minimum `2` (global config only)               |
@@ -104,23 +105,35 @@ dashboard:
   worktree_columns: [number, project, worktree, pr, mux, age, agent]
 ```
 
-| Column      | Content                                         |
-| ----------- | ----------------------------------------------- |
-| `number`    | Jump key of the row, shown under the `#` header |
-| `project`   | Project name                                    |
-| `worktree`  | Worktree name, with the branch when different   |
-| `git`       | Branch state and uncommitted changes            |
-| `pr`        | Pull request number and check status            |
-| `pr_title`  | Pull request title                              |
-| `pr_issues` | Issues closed by the pull request               |
-| `env`       | Environment info from `worktree_info_command`   |
-| `mux`       | Whether a multiplexer window is open            |
-| `age`       | Time since worktree creation                    |
-| `agent`     | Agent status summary                            |
+| Column        | Content                                                         |
+| ------------- | --------------------------------------------------------------- |
+| `number`      | Jump key of the row, shown under the `#` header                 |
+| `project`     | Project name                                                    |
+| `worktree`    | Worktree name, with the branch when different                   |
+| `git`         | Branch state and uncommitted changes                            |
+| `pr`          | Pull request number and check status                            |
+| `pr_title`    | Pull request title                                              |
+| `pr_issues`   | Issues closed by the pull request                               |
+| `base`        | Base branch with the commits ahead and behind (opt-in)          |
+| `env`         | Environment info from `worktree_info_command`                   |
+| `env_id`      | First 8 characters of the reported environment id (opt-in)      |
+| `env:<label>` | Value of the reported detail with that label, such as `env:cpu` |
+| `mux`         | Whether a multiplexer window is open                            |
+| `age`         | Time since worktree creation                                    |
+| `agent`       | Agent status summary                                            |
 
 The list sets display order; omitted columns are hidden and duplicates are ignored. An absent or empty list uses the default order. Project configuration overrides the global list, and an explicit empty project list resets it to defaults.
 
 A trailing `agent`, `pr_title`, or `pr_issues` fills the remaining width. Elsewhere it sizes to its content, leaving extra space at the right edge. The `pr` column is hidden until a worktree has a pull request or checks, except when it is the only configured column: like the agents table, it stays visible to avoid an empty table. The opt-in PR metadata columns use the same closing-reference and blank-cell behavior as the Agents table.
+
+The opt-in `base`, `env_id` and `env:<label>` columns put the info panel data in the table. An `env:<label>` column shows the `details` entry whose `label` matches (several entries with the same label are joined with `, `), cut to 32 characters; the header is the label, capitalized, or in capitals when it has three letters or fewer (`env:cpu` is shown as `CPU`). `env_id` and each `env:<label>` column appear only while at least one row has a value. When the table is wider than the pane, these opt-in columns are dropped starting from the last one in the list, so their order is also their priority; the other columns are never dropped. Quote the entries in YAML when in doubt (`"env:cpu"`).
+
+The opt-in columns can also be listed in `worktree_extra_columns`, which inserts them right after `env` (at the end when `env` is not shown), in the listed order, skipping any already in `worktree_columns`. Use it when the same config file is read by a workmux build without these columns or without `env`: such a build rejects unknown names in `worktree_columns`, but ignores the `worktree_extra_columns` key.
+
+```yaml
+dashboard:
+  worktree_extra_columns: ["env:cpu", "env:mem", "env:disk", base, env_id, "env:console"]
+```
 
 `workspaces`, `worktree_info_command`, and `worktree_info_interval` are read only from the global config (`~/.config/workmux/config.yaml`). Setting them in a project's `.workmux.yaml` logs a warning and is ignored.
 
@@ -197,7 +210,7 @@ Without `workspaces` the tab lists the current repository only, the picker has n
 - When several entries have the same path, the first one wins. An orphan whose path matches a listed worktree is shown on that worktree.
 - A failed run (non-zero exit, timeout, invalid JSON, another `schemaVersion`) keeps the data of the last successful run on screen.
 
-The `env` column appears once a report has arrived; a worktree without an entry shows `-`. The info panel adds an `Env` line with the status and the short id, followed by the details.
+The `env` column appears once a report has arrived; a worktree without an entry shows `-`. The info panel adds an `Env` line with the status and the short id, followed by the details. The same id and details can be shown as table columns with `env_id` and `env:<label>` (see [columns](#worktree-columns) above).
 
 Orphans are listed after the worktrees as `name (missing)`, with only the project and the status filled in. They follow the project picker (only orphans whose `project` equals the picked project's name) and the text filter (matching project or name). You can select an orphan to see its path, details and hint in the info panel, but it has no jump number and row actions such as open, close, remove or add worktree do nothing on it.
 

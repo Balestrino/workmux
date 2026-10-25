@@ -351,6 +351,8 @@ pub(crate) struct ResourceHeaderState<'a> {
 pub(crate) enum ResourceHeaderCell {
     /// Plain label with no fetch state.
     Plain(&'static str),
+    /// Plain label built at runtime, such as a provider detail label.
+    Owned(String),
     /// `Git` label, spinning while git data is being fetched.
     Git,
     /// `PR` label, spinning while GitHub data is being fetched.
@@ -365,6 +367,7 @@ pub(crate) fn resource_table_header(
     let header_style = Style::default().fg(state.palette.header).bold();
     let header_cells = columns.iter().map(|column| match column {
         ResourceHeaderCell::Plain(label) => Cell::from(*label).style(header_style),
+        ResourceHeaderCell::Owned(label) => Cell::from(label.clone()).style(header_style),
         ResourceHeaderCell::Git => Cell::from(build_column_header(
             "Git",
             state.git_fetching,

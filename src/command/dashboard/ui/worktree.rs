@@ -135,8 +135,8 @@ pub fn render_worktree_table(f: &mut Frame, app: &mut App, area: Rect) {
                 .created_at
                 .map(|ts| agent::format_age(now.saturating_sub(ts)));
 
-            let (env_text, env_style) =
-                env_cell(app.worktree_info_index.by_path.get(&wt.path), &app.palette);
+            let info = app.worktree_info_index.by_path.get(&wt.path);
+            let (env_text, env_style) = env_cell(info, &app.palette);
 
             WorktreeRowData {
                 jump_key,
@@ -153,6 +153,11 @@ pub fn render_worktree_table(f: &mut Frame, app: &mut App, area: Rect) {
                 age: age.unwrap_or_default(),
                 env_text,
                 env_style,
+                env_id: info.and_then(|entry| entry.id.clone()),
+                env_details: info
+                    .map(|entry| detail_pairs(&entry.details))
+                    .unwrap_or_default(),
+                base_spans: base_spans(git_status, &app.palette),
                 is_orphan: false,
             }
         })
@@ -167,9 +172,11 @@ pub fn render_worktree_table(f: &mut Frame, app: &mut App, area: Rect) {
         );
     }
 
+    let columns = drop_empty_env_columns(columns, &row_data);
     let table = build_worktree_table(
         &columns,
         row_data,
+        area.width,
         worktree_max_width,
         format::project_width_budget(area.width),
         format::ResourceHeaderState {
@@ -213,7 +220,79 @@ struct WorktreeRowData {
     age: String,
     env_text: String,
     env_style: Style,
+    env_id: Option<String>,
+    /// Provider details as (label, value), in report order.
+    env_details: Vec<(String, String)>,
+    base_spans: Vec<(String, Style)>,
     is_orphan: bool,
+}
+
+/// Longest value shown in an `env:<label>` cell; the info panel keeps it whole.
+const ENV_DETAIL_MAX_WIDTH: usize = 32;
+
+fn detail_pairs(details: &[InfoDetail]) -> Vec<(String, String)> {
+    details
+        .iter()
+        .map(|detail| (detail.label.clone(), detail.value.clone()))
+        .collect()
+}
+
+/// Values reported under `label`, joined when the provider repeats it.
+fn env_detail_value(row: &WorktreeRowData, label: &str) -> Option<String> {
+    let values: Vec<&str> = row
+        .env_details
+        .iter()
+        .filter(|(name, _)| name == label)
+        .map(|(_, value)| value.as_str())
+        .collect();
+    (!values.is_empty()).then(|| values.join(", "))
+}
+
+/// Header of an `env:<label>` column: short lowercase labels read as
+/// abbreviations (`CPU`), longer ones are capitalized (`Disk`).
+fn env_detail_header(label: &str) -> String {
+    if label.chars().count() <= 3 && label.chars().all(|c| c.is_ascii_lowercase()) {
+        return label.to_ascii_uppercase();
+    }
+    let mut chars = label.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+fn short_id(id: &str) -> String {
+    id.chars().take(8).collect()
+}
+
+/// Base cell: the base branch (`main` when unknown, as in the info panel) and
+/// the commits ahead and behind, colored like the panel.
+fn base_spans(
+    status: Option<&crate::git::GitStatus>,
+    palette: &ThemePalette,
+) -> Vec<(String, Style)> {
+    let Some(status) = status else {
+        return Vec::new();
+    };
+    let base = if status.base_branch.is_empty() {
+        "main".to_string()
+    } else {
+        status.base_branch.clone()
+    };
+    let mut spans = vec![(base, Style::default().fg(palette.text))];
+    if status.ahead > 0 {
+        spans.push((
+            format!(" \u{2191}{}", status.ahead),
+            Style::default().fg(palette.info),
+        ));
+    }
+    if status.behind > 0 {
+        spans.push((
+            format!(" \u{2193}{}", status.behind),
+            Style::default().fg(palette.accent),
+        ));
+    }
+    spans
 }
 
 /// Map a provider tone to a palette color.
@@ -271,6 +350,9 @@ fn orphan_row(
         age: String::new(),
         env_text,
         env_style,
+        env_id: orphan.id.clone(),
+        env_details: detail_pairs(&orphan.details),
+        base_spans: Vec::new(),
         is_orphan: true,
     }
 }
@@ -284,9 +366,9 @@ fn visible_columns(
 ) -> Vec<WorktreeColumn> {
     let visible: Vec<_> = configured
         .iter()
-        .copied()
-        .filter(|column| *column != WorktreeColumn::Pr || show_pr_column)
-        .filter(|column| *column != WorktreeColumn::Env || show_env_column)
+        .filter(|column| **column != WorktreeColumn::Pr || show_pr_column)
+        .filter(|column| **column != WorktreeColumn::Env || show_env_column)
+        .cloned()
         .collect();
     if visible.is_empty() {
         configured.to_vec()
@@ -295,8 +377,43 @@ fn visible_columns(
     }
 }
 
+/// Drop the Id and `env:<label>` columns that no row has a value for.
+fn drop_empty_env_columns(
+    columns: Vec<WorktreeColumn>,
+    rows: &[WorktreeRowData],
+) -> Vec<WorktreeColumn> {
+    columns
+        .into_iter()
+        .filter(|column| match column {
+            WorktreeColumn::EnvId => rows.iter().any(|row| row.env_id.is_some()),
+            WorktreeColumn::EnvDetail(label) => rows
+                .iter()
+                .any(|row| row.env_details.iter().any(|(name, _)| name == label)),
+            _ => true,
+        })
+        .collect()
+}
+
+/// Columns the table can lose when the pane is too narrow for all of them.
+fn is_extra_column(column: &WorktreeColumn) -> bool {
+    matches!(
+        column,
+        WorktreeColumn::Base | WorktreeColumn::EnvId | WorktreeColumn::EnvDetail(_)
+    )
+}
+
+fn env_id_cell(row: &WorktreeRowData, palette: &ThemePalette) -> Cell<'static> {
+    Cell::from(row.env_id.as_deref().map(short_id).unwrap_or_default())
+        .style(Style::default().fg(palette.dimmed))
+}
+
+fn env_detail_cell(row: &WorktreeRowData, label: &str, style: Style) -> Cell<'static> {
+    let value = env_detail_value(row, label).unwrap_or_default();
+    Cell::from(truncate(&value, ENV_DETAIL_MAX_WIDTH)).style(style)
+}
+
 fn worktree_cell(
-    column: WorktreeColumn,
+    column: &WorktreeColumn,
     row: &WorktreeRowData,
     palette: &ThemePalette,
 ) -> Cell<'static> {
@@ -314,7 +431,12 @@ fn worktree_cell(
         WorktreeColumn::Pr => Cell::from(format::spans_to_line(row.pr_spans.clone())),
         WorktreeColumn::PrTitle => Cell::from(row.pr_title.clone()),
         WorktreeColumn::PrIssues => Cell::from(row.pr_issues.clone()),
+        WorktreeColumn::Base => Cell::from(format::spans_to_line(row.base_spans.clone())),
         WorktreeColumn::Env => Cell::from(row.env_text.clone()).style(row.env_style),
+        WorktreeColumn::EnvId => env_id_cell(row, palette),
+        WorktreeColumn::EnvDetail(label) => {
+            env_detail_cell(row, label, Style::default().fg(palette.text))
+        }
         WorktreeColumn::Mux => {
             if row.has_mux_window {
                 Cell::from("\u{25cf}").style(Style::default().fg(palette.success))
@@ -332,7 +454,7 @@ fn worktree_cell(
 /// Cells of an orphan row: dimmed, `(missing)` in the error color, the status
 /// in Env and everything else empty.
 fn orphan_cell(
-    column: WorktreeColumn,
+    column: &WorktreeColumn,
     row: &WorktreeRowData,
     palette: &ThemePalette,
 ) -> Cell<'static> {
@@ -351,6 +473,8 @@ fn orphan_cell(
             ]))
         }
         WorktreeColumn::Env => Cell::from(row.env_text.clone()).style(row.env_style),
+        WorktreeColumn::EnvId => env_id_cell(row, palette),
+        WorktreeColumn::EnvDetail(label) => env_detail_cell(row, label, dimmed),
         _ => Cell::from(""),
     }
 }
@@ -366,30 +490,17 @@ fn worktree_width_budget(area_width: u16) -> usize {
 }
 
 /// Derive headers, cells and constraints from the same visible column order.
+/// When the columns are wider than `area_width`, the extra columns (Base, Id
+/// and `env:<label>`) are dropped from the end of the list until the rest fits.
 fn build_worktree_table(
     columns: &[WorktreeColumn],
     row_data: Vec<WorktreeRowData>,
+    area_width: u16,
     worktree_max_width: usize,
     project_max_width: usize,
     header_state: format::ResourceHeaderState<'_>,
 ) -> Table<'static> {
     let palette = header_state.palette;
-    let header_cells: Vec<_> = columns
-        .iter()
-        .map(|column| match column {
-            WorktreeColumn::Number => ResourceHeaderCell::Plain("#"),
-            WorktreeColumn::Project => ResourceHeaderCell::Plain("Project"),
-            WorktreeColumn::Worktree => ResourceHeaderCell::Plain("Worktree"),
-            WorktreeColumn::Git => ResourceHeaderCell::Git,
-            WorktreeColumn::Pr => ResourceHeaderCell::Pr,
-            WorktreeColumn::PrTitle => ResourceHeaderCell::Plain("PR Title"),
-            WorktreeColumn::PrIssues => ResourceHeaderCell::Plain("PR Issues"),
-            WorktreeColumn::Env => ResourceHeaderCell::Plain("Env"),
-            WorktreeColumn::Mux => ResourceHeaderCell::Plain("Mux"),
-            WorktreeColumn::Age => ResourceHeaderCell::Plain("Age"),
-            WorktreeColumn::Agent => ResourceHeaderCell::Plain("Agent"),
-        })
-        .collect();
 
     let project_names: Vec<String> = row_data.iter().map(|r| r.project.clone()).collect();
     let max_project_width = format::calc_column_width(&project_names, 5, project_max_width, 2);
@@ -398,27 +509,19 @@ fn build_worktree_table(
         .map(|r| r.worktree_display.clone())
         .collect();
     let max_worktree_width = format::calc_column_width(&worktree_names, 8, worktree_max_width, 1);
+    let spans_width = |spans: &[(String, Style)]| -> usize {
+        spans.iter().map(|(text, _)| text.chars().count()).sum()
+    };
     let max_git_width = row_data
         .iter()
-        .map(|row| {
-            row.git_spans
-                .iter()
-                .map(|(text, _)| text.chars().count())
-                .sum::<usize>()
-        })
+        .map(|row| spans_width(&row.git_spans))
         .max()
         .unwrap_or(4)
         .clamp(4, 30)
         + 1;
     let max_pr_width = row_data
         .iter()
-        .map(|row| &row.pr_spans)
-        .map(|spans| {
-            spans
-                .iter()
-                .map(|(text, _)| text.chars().count())
-                .sum::<usize>()
-        })
+        .map(|row| spans_width(&row.pr_spans))
         .max()
         .unwrap_or(4)
         .clamp(4, 16)
@@ -434,33 +537,93 @@ fn build_worktree_table(
         .unwrap_or(0)
         .clamp(3, 24)
         + 1;
+    let max_base_width = row_data
+        .iter()
+        .map(|row| spans_width(&row.base_spans))
+        .max()
+        .unwrap_or(0)
+        .clamp(4, 30)
+        + 1;
     let max_agent_width = row_data
         .iter()
         .map(|row| row.agent_line.width())
         .max()
         .unwrap_or(0)
         .clamp(5, u16::MAX as usize) as u16;
+    let env_detail_width = |label: &str| -> u16 {
+        let widest = row_data
+            .iter()
+            .filter_map(|row| env_detail_value(row, label))
+            .map(|value| value.chars().count().min(ENV_DETAIL_MAX_WIDTH))
+            .max()
+            .unwrap_or(0);
+        (widest.max(env_detail_header(label).chars().count()) + 1) as u16
+    };
+    let width = |column: &WorktreeColumn| -> u16 {
+        match column {
+            WorktreeColumn::Number => 2,
+            WorktreeColumn::Project => max_project_width,
+            WorktreeColumn::Worktree => max_worktree_width,
+            WorktreeColumn::Git => max_git_width as u16,
+            WorktreeColumn::Pr => max_pr_width as u16,
+            WorktreeColumn::PrTitle => max_pr_title_width,
+            WorktreeColumn::PrIssues => max_pr_issues_width,
+            WorktreeColumn::Base => max_base_width as u16,
+            WorktreeColumn::Env => max_env_width as u16,
+            WorktreeColumn::EnvId => 9,
+            WorktreeColumn::EnvDetail(label) => env_detail_width(label),
+            WorktreeColumn::Mux => 4,
+            WorktreeColumn::Age => 4,
+            WorktreeColumn::Agent => max_agent_width,
+        }
+    };
+
+    // Two cells for the highlight symbol, one between columns.
+    let total = |columns: &[WorktreeColumn]| -> usize {
+        2 + columns.iter().map(|c| width(c) as usize).sum::<usize>()
+            + columns.len().saturating_sub(1)
+    };
+    let mut columns = columns.to_vec();
+    while total(&columns) > area_width as usize {
+        let Some(last_extra) = columns.iter().rposition(is_extra_column) else {
+            break;
+        };
+        columns.remove(last_extra);
+    }
+    let columns = columns.as_slice();
+
+    let header_cells: Vec<_> = columns
+        .iter()
+        .map(|column| match column {
+            WorktreeColumn::Number => ResourceHeaderCell::Plain("#"),
+            WorktreeColumn::Project => ResourceHeaderCell::Plain("Project"),
+            WorktreeColumn::Worktree => ResourceHeaderCell::Plain("Worktree"),
+            WorktreeColumn::Git => ResourceHeaderCell::Git,
+            WorktreeColumn::Pr => ResourceHeaderCell::Pr,
+            WorktreeColumn::PrTitle => ResourceHeaderCell::Plain("PR Title"),
+            WorktreeColumn::PrIssues => ResourceHeaderCell::Plain("PR Issues"),
+            WorktreeColumn::Base => ResourceHeaderCell::Plain("Base"),
+            WorktreeColumn::Env => ResourceHeaderCell::Plain("Env"),
+            WorktreeColumn::EnvId => ResourceHeaderCell::Plain("Id"),
+            WorktreeColumn::EnvDetail(label) => ResourceHeaderCell::Owned(env_detail_header(label)),
+            WorktreeColumn::Mux => ResourceHeaderCell::Plain("Mux"),
+            WorktreeColumn::Age => ResourceHeaderCell::Plain("Age"),
+            WorktreeColumn::Agent => ResourceHeaderCell::Plain("Agent"),
+        })
+        .collect();
 
     let last_column = columns.len().saturating_sub(1);
     let constraints: Vec<_> = columns
         .iter()
         .enumerate()
         .map(|(index, column)| match column {
-            WorktreeColumn::Number => Constraint::Length(2),
-            WorktreeColumn::Project => Constraint::Length(max_project_width),
-            WorktreeColumn::Worktree => Constraint::Length(max_worktree_width),
-            WorktreeColumn::Git => Constraint::Length(max_git_width as u16),
-            WorktreeColumn::Pr => Constraint::Length(max_pr_width as u16),
-            WorktreeColumn::PrTitle if index == last_column => Constraint::Fill(1),
-            WorktreeColumn::PrTitle => Constraint::Length(max_pr_title_width),
-            WorktreeColumn::PrIssues if index == last_column => Constraint::Fill(1),
-            WorktreeColumn::PrIssues => Constraint::Length(max_pr_issues_width),
-            WorktreeColumn::Env => Constraint::Length(max_env_width as u16),
-            WorktreeColumn::Mux => Constraint::Length(4),
-            WorktreeColumn::Age => Constraint::Length(4),
-            // Fill only at the end, so columns after Agent stay contiguous.
-            WorktreeColumn::Agent if index == last_column => Constraint::Fill(1),
-            WorktreeColumn::Agent => Constraint::Length(max_agent_width),
+            // Fill only at the end, so the columns before stay contiguous.
+            WorktreeColumn::PrTitle | WorktreeColumn::PrIssues | WorktreeColumn::Agent
+                if index == last_column =>
+            {
+                Constraint::Fill(1)
+            }
+            column => Constraint::Length(width(column)),
         })
         .collect();
 
@@ -469,7 +632,7 @@ fn build_worktree_table(
         .map(|data| {
             let cells: Vec<_> = columns
                 .iter()
-                .map(|column| worktree_cell(*column, &data, palette))
+                .map(|column| worktree_cell(column, &data, palette))
                 .collect();
             let row = Row::new(cells);
             if data.is_current {
@@ -924,8 +1087,21 @@ mod tests {
             age: "2h".into(),
             env_text: "-".into(),
             env_style: Style::default(),
+            env_id: None,
+            env_details: Vec::new(),
+            base_spans: Vec::new(),
             is_orphan: false,
         }
+    }
+
+    fn with_details(id: Option<&str>, details: &[(&str, &str)]) -> WorktreeRowData {
+        let mut data = row();
+        data.env_id = id.map(Into::into);
+        data.env_details = details
+            .iter()
+            .map(|(label, value)| ((*label).into(), (*value).into()))
+            .collect();
+        data
     }
 
     fn info_status(label: &str, tone: Tone) -> InfoStatus {
@@ -987,6 +1163,7 @@ mod tests {
         let table = build_worktree_table(
             columns,
             rows,
+            width,
             worktree_width_budget(width),
             format::project_width_budget(width),
             format::ResourceHeaderState {
@@ -1326,5 +1503,197 @@ mod tests {
         assert_eq!(tone_color(&Tone::Error, &p), p.danger);
         assert_eq!(tone_color(&Tone::Info, &p), p.info);
         assert_eq!(tone_color(&Tone::Muted, &p), p.dimmed);
+    }
+
+    #[test]
+    fn env_detail_columns_show_values_under_their_label() {
+        use WorktreeColumn::*;
+        let rows = vec![
+            with_details(
+                Some("dd4b4587-0000"),
+                &[("cpu", "3.5%"), ("disk", "4.8 GiB")],
+            ),
+            with_details(None, &[("disk", "2.1 GiB")]),
+        ];
+        let columns = [
+            Worktree,
+            EnvId,
+            EnvDetail("cpu".into()),
+            EnvDetail("disk".into()),
+        ];
+        let buffer = render(&columns, rows, 60, None);
+        let header = line(&buffer, 0);
+        let first = line(&buffer, 1);
+        let second = line(&buffer, 2);
+        assert_eq!(
+            header.split_whitespace().collect::<Vec<_>>(),
+            ["Worktree", "Id", "CPU", "Disk"]
+        );
+        assert_eq!(
+            first.split_whitespace().collect::<Vec<_>>(),
+            ["wt", "dd4b4587", "3.5%", "4.8", "GiB"]
+        );
+        assert_eq!(header.find("Disk"), first.find("4.8"));
+        assert_eq!(header.find("Disk"), second.find("2.1"));
+        assert_eq!(
+            second.split_whitespace().collect::<Vec<_>>(),
+            ["wt", "2.1", "GiB"]
+        );
+    }
+
+    #[test]
+    fn env_detail_column_joins_repeated_labels_and_truncates_long_values() {
+        use WorktreeColumn::*;
+        let long = "http://orkestra-staging-1.tailc4dad.ts.net:18601";
+        let rows = vec![with_details(
+            None,
+            &[("stack", "a (2)"), ("stack", "b (1)"), ("console", long)],
+        )];
+        let buffer = render(
+            &[EnvDetail("stack".into()), EnvDetail("console".into())],
+            rows,
+            120,
+            None,
+        );
+        let first = line(&buffer, 1);
+        assert!(first.starts_with("a (2), b (1)"), "{first:?}");
+        assert!(
+            first.contains("http://orkestra-staging-1.tailc…"),
+            "{first:?}"
+        );
+        assert!(!first.contains(long), "{first:?}");
+    }
+
+    #[test]
+    fn env_detail_headers_capitalize_the_label() {
+        assert_eq!(env_detail_header("cpu"), "CPU");
+        assert_eq!(env_detail_header("mem"), "MEM");
+        assert_eq!(env_detail_header("disk"), "Disk");
+        assert_eq!(env_detail_header("volumes"), "Volumes");
+    }
+
+    #[test]
+    fn base_column_shows_branch_and_divergence() {
+        let palette = palette();
+        let status = crate::git::GitStatus {
+            base_branch: "dev".into(),
+            ahead: 2,
+            behind: 7,
+            ..Default::default()
+        };
+        let spans = base_spans(Some(&status), &palette);
+        assert_eq!(
+            spans
+                .iter()
+                .map(|(text, _)| text.as_str())
+                .collect::<String>(),
+            "dev \u{2191}2 \u{2193}7"
+        );
+        let plain = crate::git::GitStatus::default();
+        assert_eq!(
+            base_spans(Some(&plain), &palette)
+                .iter()
+                .map(|(text, _)| text.as_str())
+                .collect::<String>(),
+            "main"
+        );
+        assert!(base_spans(None, &palette).is_empty());
+        let mut data = row();
+        data.base_spans = spans;
+        let buffer = render(
+            &[WorktreeColumn::Worktree, WorktreeColumn::Base],
+            vec![data],
+            40,
+            None,
+        );
+        assert_eq!(
+            line(&buffer, 0).split_whitespace().collect::<Vec<_>>(),
+            ["Worktree", "Base"]
+        );
+        assert!(
+            line(&buffer, 1).ends_with("dev \u{2191}2 \u{2193}7"),
+            "{:?}",
+            line(&buffer, 1)
+        );
+    }
+
+    #[test]
+    fn env_columns_without_any_value_are_dropped() {
+        use WorktreeColumn::*;
+        let rows = vec![with_details(None, &[("cpu", "1.0%")])];
+        assert_eq!(
+            drop_empty_env_columns(
+                vec![
+                    Worktree,
+                    EnvId,
+                    EnvDetail("cpu".into()),
+                    EnvDetail("mem".into()),
+                    Base
+                ],
+                &rows
+            ),
+            [Worktree, EnvDetail("cpu".into()), Base]
+        );
+    }
+
+    #[test]
+    fn extra_columns_that_do_not_fit_are_dropped_from_the_end() {
+        use WorktreeColumn::*;
+        let rows = vec![with_details(
+            Some("dd4b4587-0000"),
+            &[
+                ("cpu", "3.5%"),
+                (
+                    "console",
+                    "http://orkestra-staging-1.tailc4dad.ts.net:18601",
+                ),
+            ],
+        )];
+        let columns = vec![
+            Number,
+            Worktree,
+            EnvDetail("cpu".into()),
+            Agent,
+            EnvId,
+            EnvDetail("console".into()),
+        ];
+        let buffer = render(&columns, rows, 40, None);
+        let header = line(&buffer, 0);
+        assert_eq!(
+            header.split_whitespace().collect::<Vec<_>>(),
+            ["#", "Worktree", "CPU", "Agent", "Id"],
+            "{header:?}"
+        );
+        let wide = render(
+            &columns,
+            vec![with_details(
+                Some("dd4b4587-0000"),
+                &[("cpu", "3.5%"), ("console", "x")],
+            )],
+            80,
+            None,
+        );
+        assert!(line(&wide, 0).ends_with("Console"), "{:?}", line(&wide, 0));
+    }
+
+    #[test]
+    fn orphan_rows_fill_env_id_and_detail_columns() {
+        use WorktreeColumn::*;
+        let palette = palette();
+        let mut gone = orphan();
+        gone.details = vec![InfoDetail {
+            label: "reason".into(),
+            value: "worktree-missing".into(),
+        }];
+        let rows = vec![orphan_row(&gone, &palette, 25)];
+        let buffer = render(
+            &[Worktree, EnvId, EnvDetail("reason".into())],
+            rows,
+            60,
+            None,
+        );
+        let first = line(&buffer, 1);
+        assert!(first.contains("dd4b4587"), "{first:?}");
+        assert!(first.contains("worktree-missing"), "{first:?}");
     }
 }

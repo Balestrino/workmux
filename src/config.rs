@@ -275,6 +275,11 @@ pub struct DashboardConfig {
     /// Default: number, project, worktree, git, pr, env, mux, age, agent.
     pub worktree_columns: Option<Vec<WorktreeColumn>>,
 
+    /// Opt-in worktree columns inserted right after `env` (at the end without
+    /// it), such as `base`, `env_id` or `env:cpu`. A separate key lets
+    /// `worktree_columns` stay readable by builds without these columns.
+    pub worktree_extra_columns: Option<Vec<WorktreeColumn>>,
+
     /// Default sort mode for the agent list: "priority", "project", "recency", "natural".
     /// Used when the dashboard has no persisted sort preference.
     /// Default: "priority"
@@ -353,8 +358,8 @@ pub const DEFAULT_AGENT_COLUMNS: [AgentColumn; 8] = [
 ];
 
 /// A configurable column of the dashboard worktree table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "String", into = "String")]
 pub enum WorktreeColumn {
     Number,
     Project,
@@ -363,11 +368,73 @@ pub enum WorktreeColumn {
     Pr,
     PrTitle,
     PrIssues,
+    /// Base branch with commits ahead and behind.
+    Base,
     /// Environment info reported by `dashboard.worktree_info_command`.
     Env,
+    /// Short id of the reported environment.
+    EnvId,
+    /// Value of the reported detail with this label, written `env:<label>`.
+    EnvDetail(String),
     Mux,
     Age,
     Agent,
+}
+
+const WORKTREE_COLUMN_NAMES: [(&str, WorktreeColumn); 13] = [
+    ("number", WorktreeColumn::Number),
+    ("project", WorktreeColumn::Project),
+    ("worktree", WorktreeColumn::Worktree),
+    ("git", WorktreeColumn::Git),
+    ("pr", WorktreeColumn::Pr),
+    ("pr_title", WorktreeColumn::PrTitle),
+    ("pr_issues", WorktreeColumn::PrIssues),
+    ("base", WorktreeColumn::Base),
+    ("env", WorktreeColumn::Env),
+    ("env_id", WorktreeColumn::EnvId),
+    ("mux", WorktreeColumn::Mux),
+    ("age", WorktreeColumn::Age),
+    ("agent", WorktreeColumn::Agent),
+];
+
+impl TryFrom<String> for WorktreeColumn {
+    type Error = String;
+
+    fn try_from(name: String) -> Result<Self, Self::Error> {
+        if let Some(label) = name.strip_prefix("env:") {
+            if label.is_empty() {
+                return Err("a worktree column `env:<label>` needs a label".into());
+            }
+            return Ok(Self::EnvDetail(label.to_string()));
+        }
+        WORKTREE_COLUMN_NAMES
+            .iter()
+            .find(|(known, _)| *known == name)
+            .map(|(_, column)| column.clone())
+            .ok_or_else(|| {
+                let expected: Vec<_> = WORKTREE_COLUMN_NAMES
+                    .iter()
+                    .map(|(known, _)| format!("`{known}`"))
+                    .collect();
+                format!(
+                    "unknown variant `{name}`, expected one of {} or `env:<label>`",
+                    expected.join(", ")
+                )
+            })
+    }
+}
+
+impl From<WorktreeColumn> for String {
+    fn from(column: WorktreeColumn) -> Self {
+        if let WorktreeColumn::EnvDetail(label) = &column {
+            return format!("env:{label}");
+        }
+        WORKTREE_COLUMN_NAMES
+            .iter()
+            .find(|(_, known)| *known == column)
+            .map(|(name, _)| (*name).to_string())
+            .unwrap_or_default()
+    }
 }
 
 /// Columns used when the config does not set `dashboard.worktree_columns`.
@@ -383,11 +450,11 @@ pub const DEFAULT_WORKTREE_COLUMNS: [WorktreeColumn; 9] = [
     WorktreeColumn::Agent,
 ];
 
-fn columns_or_default<T: Copy + PartialEq>(configured: Option<&[T]>, defaults: &[T]) -> Vec<T> {
+fn columns_or_default<T: Clone + PartialEq>(configured: Option<&[T]>, defaults: &[T]) -> Vec<T> {
     let mut columns = Vec::new();
     for column in configured.unwrap_or(defaults) {
         if !columns.contains(column) {
-            columns.push(*column);
+            columns.push(column.clone());
         }
     }
     if columns.is_empty() {
@@ -441,7 +508,19 @@ impl DashboardConfig {
     /// a column is never rendered twice, and an empty or absent list falls back
     /// to the default order.
     pub fn worktree_columns(&self) -> Vec<WorktreeColumn> {
-        columns_or_default(self.worktree_columns.as_deref(), &DEFAULT_WORKTREE_COLUMNS)
+        let mut columns =
+            columns_or_default(self.worktree_columns.as_deref(), &DEFAULT_WORKTREE_COLUMNS);
+        let mut at = columns
+            .iter()
+            .position(|column| *column == WorktreeColumn::Env)
+            .map_or(columns.len(), |env| env + 1);
+        for column in self.worktree_extra_columns.iter().flatten() {
+            if !columns.contains(column) {
+                columns.insert(at, column.clone());
+                at += 1;
+            }
+        }
+        columns
     }
 
     /// Whether to show check pass/total counts alongside check icons.
@@ -3311,6 +3390,10 @@ impl Config {
                 .dashboard
                 .worktree_columns
                 .or(self.dashboard.worktree_columns),
+            worktree_extra_columns: project
+                .dashboard
+                .worktree_extra_columns
+                .or(self.dashboard.worktree_extra_columns),
             sort_mode: project.dashboard.sort_mode.or(self.dashboard.sort_mode),
             close_on_jump: project
                 .dashboard
@@ -3868,6 +3951,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 #   preview_size: 60
 #   agent_columns: [number, project, worktree, git, pr, status, time, title]
 #   worktree_columns: [number, project, worktree, git, pr, env, mux, age, agent]
+#   worktree_extra_columns: ["env:cpu", "env:mem", base, env_id] # inserted after env
 #   sort_mode: priority
 #   close_on_jump: true
 #   input_exit_key: Esc # Esc or Ctrl+<letter> (a-z)
@@ -4517,6 +4601,101 @@ mod tests {
             global.merge(Config::default()).dashboard.worktree_columns(),
             vec![WorktreeColumn::Mux, WorktreeColumn::Agent]
         );
+    }
+
+    #[test]
+    fn worktree_columns_parse_base_env_id_and_env_details() {
+        let config: Config = serde_yaml::from_str(
+            "dashboard:\n  worktree_columns: [base, env_id, env:cpu, \"env:mem\", env]\n",
+        )
+        .expect("config parses");
+        assert_eq!(
+            config.dashboard.worktree_columns(),
+            vec![
+                WorktreeColumn::Base,
+                WorktreeColumn::EnvId,
+                WorktreeColumn::EnvDetail("cpu".into()),
+                WorktreeColumn::EnvDetail("mem".into()),
+                WorktreeColumn::Env,
+            ]
+        );
+    }
+
+    #[test]
+    fn worktree_columns_drop_duplicate_env_details() {
+        let config: Config =
+            serde_yaml::from_str("dashboard:\n  worktree_columns: [env:cpu, env:cpu, env:mem]\n")
+                .expect("config parses");
+        assert_eq!(
+            config.dashboard.worktree_columns(),
+            vec![
+                WorktreeColumn::EnvDetail("cpu".into()),
+                WorktreeColumn::EnvDetail("mem".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn worktree_columns_reject_an_empty_env_detail_label() {
+        let error = serde_yaml::from_str::<Config>("dashboard:\n  worktree_columns: [\"env:\"]\n")
+            .unwrap_err();
+        assert!(error.to_string().contains("env:<label>"), "{error}");
+    }
+
+    #[test]
+    fn worktree_extra_columns_follow_env_in_their_order() {
+        let config: Config =
+            serde_yaml::from_str("dashboard:\n  worktree_extra_columns: [env:cpu, base, env_id]\n")
+                .expect("config parses");
+        use WorktreeColumn::*;
+        assert_eq!(
+            config.dashboard.worktree_columns(),
+            vec![
+                Number,
+                Project,
+                Worktree,
+                Git,
+                Pr,
+                Env,
+                EnvDetail("cpu".into()),
+                Base,
+                EnvId,
+                Mux,
+                Age,
+                Agent
+            ]
+        );
+    }
+
+    #[test]
+    fn worktree_extra_columns_go_last_without_env_and_skip_listed_columns() {
+        let config: Config = serde_yaml::from_str(
+            "dashboard:\n  worktree_columns: [worktree, base, agent]\n  worktree_extra_columns: [base, env:mem, env:mem]\n",
+        )
+        .expect("config parses");
+        use WorktreeColumn::*;
+        assert_eq!(
+            config.dashboard.worktree_columns(),
+            vec![Worktree, Base, Agent, EnvDetail("mem".into())]
+        );
+    }
+
+    #[test]
+    fn worktree_extra_columns_project_overrides_global() {
+        let global: Config =
+            serde_yaml::from_str("dashboard:\n  worktree_extra_columns: [base]\n").unwrap();
+        let project: Config =
+            serde_yaml::from_str("dashboard:\n  worktree_extra_columns: [env_id]\n").unwrap();
+        let unset = global.clone().merge(Config::default());
+        assert!(
+            unset
+                .dashboard
+                .worktree_columns()
+                .contains(&WorktreeColumn::Base)
+        );
+        let merged = global.merge(project).dashboard.worktree_columns();
+        assert!(merged.contains(&WorktreeColumn::EnvId));
+        assert!(!merged.contains(&WorktreeColumn::Base));
     }
 
     #[test]
