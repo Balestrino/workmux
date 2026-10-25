@@ -4,7 +4,7 @@
 // is reduced, so render it with reduced motion at 1280x640, e.g.
 //
 //   agent-browser set viewport 1280 640 2
-//   agent-browser set media light reduced-motion
+//   agent-browser set media dark reduced-motion
 //   agent-browser open <dev server>/dev/social-card/
 //   agent-browser screenshot social-preview@2x.png
 //
@@ -18,7 +18,7 @@ export function getStaticPaths() {
 ---
 
 <!doctype html>
-<html lang="en-US" data-theme="light">
+<html lang="en-US" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="robots" content="noindex" />
@@ -62,7 +62,7 @@ export function getStaticPaths() {
   html,
   body {
     margin: 0;
-    background: #f6f8f7;
+    background: #0d1213;
   }
   body {
     -webkit-font-smoothing: antialiased;
@@ -79,10 +79,10 @@ export function getStaticPaths() {
     width: 1280px;
     height: 640px;
     overflow: hidden;
-    color: #172325;
+    color: #eaf2ef;
     background:
-      radial-gradient(52rem 26rem at 78% -12%, #dff3ee, transparent 70%),
-      #f6f8f7;
+      radial-gradient(52rem 26rem at 78% -12%, #0f2e29, transparent 70%),
+      #0d1213;
     font-family: Inter, ui-sans-serif, system-ui, sans-serif;
   }
 
@@ -114,7 +114,7 @@ export function getStaticPaths() {
   }
 
   h1 span {
-    color: #7d8d8d;
+    color: #6f8281;
   }
 
   /* The headline's article in a retro script, slanted against "tmux", as on
@@ -122,7 +122,7 @@ export function getStaticPaths() {
   h1 .c-the {
     display: inline-block;
     margin-right: 0.14em;
-    color: #172325;
+    color: #eaf2ef;
     font-family: 'Mr Dafoe', cursive;
     font-size: 0.8em;
     font-weight: 400;
@@ -134,7 +134,7 @@ export function getStaticPaths() {
     position: relative;
     top: -0.05em;
     margin-left: 0.02em;
-    color: #087f70;
+    color: #48d9be;
     font-size: 0.5em;
     font-weight: 600;
     line-height: 0;
@@ -142,7 +142,7 @@ export function getStaticPaths() {
 
   p {
     margin: 28px 0 0;
-    color: #526465;
+    color: #a1b2b1;
     font-size: 23px;
     line-height: 1.5;
     text-wrap: pretty;
@@ -152,15 +152,15 @@ export function getStaticPaths() {
     align-self: flex-start;
     margin-top: auto;
     padding: 12px 18px;
-    border: 1px solid #d8e2de;
+    border: 1px solid #253235;
     border-radius: 12px;
-    background: #fff;
+    background: #151d1f;
     font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
     font-size: 19px;
   }
 
   code b {
-    color: #7d8d8d;
+    color: #6f8281;
     font-weight: 400;
   }
 
@@ -171,12 +171,12 @@ export function getStaticPaths() {
     top: 76px;
     left: 690px;
     width: 1040px;
-    border: 1px solid #d8e2de;
+    border: 1px solid #253235;
     border-radius: 14px;
-    background: #fbfbfa;
+    background: #141414;
     box-shadow:
-      0 1px 2px rgb(16 32 30 / 0.06),
-      0 24px 60px -24px rgb(16 32 30 / 0.28);
+      0 0 0 1px rgb(255 255 255 / 0.03) inset,
+      0 30px 80px -24px rgb(0 0 0 / 0.7);
     overflow: hidden;
   }
 
@@ -186,9 +186,9 @@ export function getStaticPaths() {
     align-items: center;
     justify-content: center;
     height: 36px;
-    border-bottom: 1px solid #e2e2e0;
+    border-bottom: 1px solid #222;
     color: #8a8a8a;
-    background: #efefed;
+    background: #1b1b1b;
     font-size: 13px;
   }
 
