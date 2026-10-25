@@ -925,9 +925,10 @@ const wall = testimonials.slice(1);
   }
 
   /* As wide as fits while the labels, title bar and terminal (1.65:1)
-     stay within the window's height, down to a readable minimum. */
+     stay within the window's height below the sticky nav, down to a
+     readable minimum. */
   .w-showcase {
-    width: min(100rem, 100% - 2rem, max(56rem, (100svh - 7.5rem) * 1.65));
+    width: min(100rem, 100% - 2rem, max(56rem, (100svh - 11.5rem) * 1.65));
     margin: 4rem auto 0;
   }
 
