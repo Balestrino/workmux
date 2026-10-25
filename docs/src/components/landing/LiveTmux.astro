@@ -1778,16 +1778,25 @@
           udel: 0,
           msg: 'Auto-reconnect on disconnect',
         },
+        // The worktree building this very demo.
         {
-          name: 'website-redesign',
+          name: 'live-tmux-demo',
           proj: 'workmux',
-          st: 'wait',
-          since: t - 39000,
+          st: 'work',
+          since: t - 64000,
           add: 0,
           del: 0,
-          uadd: 1348,
-          udel: 212,
-          msg: 'Homepage headline',
+          uadd: 212,
+          udel: 38,
+          msg: 'Editing this',
+          ...work(
+            [
+              { st: 'work', msg: 'Editing this', dur: 27000 },
+              { st: 'wait', msg: 'Like this?', dur: 11000 },
+              { st: 'work', msg: 'Adding a tile', dur: 30000 },
+            ],
+            0,
+          ),
         },
         {
           name: 'step-goal-sync',
