@@ -3,12 +3,14 @@
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Characters that need encoding in filenames (beyond control chars).
 /// Includes path separators and other filesystem-unsafe characters.
 pub(crate) const FILENAME_ENCODE_SET: &AsciiSet =
     &CONTROLS.add(b'/').add(b'\\').add(b':').add(b'%');
 
+use super::background::{self, BackgroundItem};
 use crate::multiplexer::types::{AgentPane, AgentStatus};
 
 /// Composite pane identifier for unique state file naming.
@@ -150,6 +152,15 @@ pub struct AgentState {
     /// configuration displays prompts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+
+    /// Whether the agent's own turn is in progress (between prompt submit and
+    /// stop). Background work only shows once the turn has gone idle.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub turn_active: bool,
+
+    /// Background work the agent left running (subagents, shells, monitors).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub background: Vec<BackgroundItem>,
 }
 
 impl AgentState {
@@ -160,11 +171,25 @@ impl AgentState {
             .or_else(|| self.status.is_none().then_some(self.updated_ts))
     }
 
+    /// Whether the agent is idle on its own but has live background work.
+    ///
+    /// Derived, never stored: status `Working`, no active turn, and at least
+    /// one unexpired background item.
+    pub fn in_background(&self, now: u64) -> bool {
+        self.status == Some(AgentStatus::Working)
+            && !self.turn_active
+            && background::has_live(&self.background, now)
+    }
+
     /// Convert to AgentPane for dashboard display.
     ///
     /// The caller is responsible for providing the best available session/window names
     /// (from live pane info when available, falling back to stored values).
     pub fn to_agent_pane(&self, session: String, window_name: String) -> AgentPane {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         AgentPane {
             session,
             window_name,
@@ -181,6 +206,7 @@ impl AgentState {
             agent_command: Some(self.command.clone()),
             agent_kind: self.agent_kind.clone(),
             prompt: self.prompt.clone(),
+            background: self.in_background(now),
         }
     }
 }
@@ -280,6 +306,7 @@ pub struct RuntimeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::background::BackgroundKind;
 
     fn legacy_state(status: Option<&str>, status_ts: Option<u64>, updated_ts: u64) -> AgentState {
         serde_json::from_value(serde_json::json!({
@@ -300,6 +327,35 @@ mod tests {
             "boot_id": null
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn in_background_requires_working_idle_turn_and_live_item() {
+        let mut state = legacy_state(Some("working"), Some(1), 1);
+        state.background.push(BackgroundItem {
+            id: "a".into(),
+            kind: BackgroundKind::Shell,
+            started_ts: 10,
+            expires_ts: 100,
+            transcript_offset: None,
+        });
+        assert!(state.in_background(50));
+        assert!(!state.in_background(100));
+        state.turn_active = true;
+        assert!(!state.in_background(50));
+        state.turn_active = false;
+        state.status = Some(AgentStatus::Done);
+        assert!(!state.in_background(50));
+    }
+
+    #[test]
+    fn legacy_state_loads_without_background_fields() {
+        let state = legacy_state(Some("done"), Some(100), 200);
+        assert!(!state.turn_active);
+        assert!(state.background.is_empty());
+        let json = serde_json::to_value(&state).unwrap();
+        assert!(json.get("turn_active").is_none());
+        assert!(json.get("background").is_none());
     }
 
     #[test]

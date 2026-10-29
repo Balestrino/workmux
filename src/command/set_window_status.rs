@@ -747,6 +747,8 @@ mod tests {
             agent_kind: Some("claude".to_string()),
             agent_session_id: Some(agent_session_id.to_string()),
             prompt: None,
+            turn_active: false,
+            background: Vec::new(),
         }
     }
 

@@ -3,6 +3,7 @@
 //! This module provides persistent state storage that works across all
 //! terminal multiplexer backends (tmux, WezTerm, Zellij).
 
+pub mod background;
 pub mod run;
 pub mod store;
 #[cfg(test)]
@@ -312,6 +313,8 @@ fn persist_agent_snapshot_locked(
         agent_kind,
         agent_session_id,
         prompt,
+        turn_active: false,
+        background: Vec::new(),
     };
 
     if let Err(error) = store.upsert_agent_locked(&state) {

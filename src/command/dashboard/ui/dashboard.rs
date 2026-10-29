@@ -1165,6 +1165,7 @@ mod tests {
             agent_command: agent_command.map(Into::into),
             agent_kind: agent_kind.map(Into::into),
             prompt: None,
+            background: false,
         }
     }
 
