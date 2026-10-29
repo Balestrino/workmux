@@ -354,6 +354,78 @@ fn run_add_worktree_job(
 /// Status message for a worktree action on an agent outside every worktree.
 const NOT_IN_WORKTREE: &str = "not in a worktree";
 
+/// Which worktree fetch the view waits for, and whether it has completed.
+/// A project switch starts a new generation: a fetch spawned before it
+/// lists the old project and is ignored.
+#[derive(Debug, Default)]
+pub(super) struct WorktreeLoad {
+    generation: u64,
+    loaded: bool,
+}
+
+impl WorktreeLoad {
+    /// Generation reported by a fetch spawned now.
+    pub(super) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// A project switch: wait for a fetch spawned after it.
+    pub(super) fn restart(&mut self) {
+        self.generation += 1;
+        self.loaded = false;
+    }
+
+    /// A fetch of `generation` completed, with a list or failing. True when
+    /// it is current; the view then counts as loaded.
+    pub(super) fn complete(&mut self, generation: u64) -> bool {
+        if generation != self.generation {
+            return false;
+        }
+        self.loaded = true;
+        true
+    }
+
+    /// A list (possibly empty) has arrived for the current selection.
+    pub(super) fn loaded(&self) -> bool {
+        self.loaded
+    }
+}
+
+/// Event a finished worktree fetch sends: the list, or `WorktreeListFailed`
+/// so the view still counts as loaded (e.g. started outside a repository
+/// with no workspaces configured).
+fn fetch_result_event(
+    generation: u64,
+    worktrees: Option<Vec<workflow::types::WorktreeInfo>>,
+    names: impl FnOnce() -> HashMap<PathBuf, String>,
+) -> AppEvent {
+    match worktrees {
+        Some(worktrees) => AppEvent::WorktreeList(generation, worktrees, names()),
+        None => AppEvent::WorktreeListFailed(generation),
+    }
+}
+
+/// Whether `refresh()` rebuilds the unified rows: not while the list of a
+/// (new) project selection is pending, or stale rows would take the
+/// selection.
+pub(super) fn refresh_rebuilds_rows(unified_view: bool, load: &WorktreeLoad) -> bool {
+    unified_view && load.loaded()
+}
+
+/// Forget the previous project's lists on a project switch, so none of its
+/// rows stays selectable until the new list arrives.
+fn clear_project_lists(
+    worktrees: &mut Vec<workflow::types::WorktreeInfo>,
+    all_worktrees: &mut Vec<workflow::types::WorktreeInfo>,
+    orphans: &mut Vec<OrphanEntry>,
+    load: &mut WorktreeLoad,
+) {
+    worktrees.clear();
+    all_worktrees.clear();
+    orphans.clear();
+    load.restart();
+}
+
 /// Rows of the Worktrees table. Without the unified view: the worktrees
 /// then the orphans, as upstream.
 fn display_rows_for(unified_view: bool, inputs: &RowInputs) -> Vec<DisplayRow> {
@@ -709,6 +781,7 @@ impl App {
             .map(|(_, p)| p.clone());
         let workspace_dirs = self.config.dashboard.workspaces();
         let agent_roots: Vec<PathBuf> = self.repo_roots.values().cloned().collect();
+        let generation = self.worktree_load.generation();
 
         std::thread::spawn(move || {
             struct ResetFlag(Arc<AtomicBool>);
@@ -728,10 +801,10 @@ impl App {
                 let roots = fetch_roots(&repos, &agent_roots);
                 Some(list_all_repos(&config, mux.as_ref(), &roots))
             };
-            if let Some(worktrees) = worktrees {
-                let names = fetched_project_names(&workspace_dirs, &agent_roots);
-                let _ = tx.send(AppEvent::WorktreeList(worktrees, names));
-            }
+            let event = fetch_result_event(generation, worktrees, || {
+                fetched_project_names(&workspace_dirs, &agent_roots)
+            });
+            let _ = tx.send(event);
         });
     }
 
@@ -858,6 +931,7 @@ impl App {
         assignment: &[Option<usize>],
     ) -> Vec<DisplayRow> {
         let visible: Vec<PathBuf> = self.worktrees.iter().map(|w| w.path.clone()).collect();
+        let home = home::home_dir();
         display_rows_for(
             self.unified,
             &RowInputs {
@@ -867,7 +941,9 @@ impl App {
                 assignment,
                 orphan_count: self.visible_orphans.len(),
                 filter: &self.worktree_filter_text,
-                outside_group: self.worktree_project_override.is_none() && self.worktrees_loaded,
+                outside_group: self.worktree_project_override.is_none()
+                    && self.worktree_load.loaded(),
+                home: home.as_deref(),
             },
         )
     }
@@ -1476,9 +1552,12 @@ impl App {
         let selected = &picker.projects[idx];
 
         self.worktree_project_override = override_for(selected);
-        self.worktrees.clear();
-        self.all_worktrees.clear();
-        self.worktrees_loaded = false;
+        clear_project_lists(
+            &mut self.worktrees,
+            &mut self.all_worktrees,
+            &mut self.visible_orphans,
+            &mut self.worktree_load,
+        );
         // Rows only: the selection is restored when the new list arrives.
         let (all_paths, assignment) = self.agent_assignment();
         self.display_rows = self.compute_display_rows(&all_paths, &assignment);
@@ -2748,6 +2827,93 @@ mod tests {
     }
 
     #[test]
+    fn failed_fetch_still_shows_the_outside_group() {
+        let mut load = WorktreeLoad::default();
+        let generation = load.generation();
+        let event = fetch_result_event(generation, None, HashMap::new);
+        let AppEvent::WorktreeListFailed(reported) = event else {
+            panic!("a failed fetch must report its completion");
+        };
+        assert!(load.complete(reported));
+        assert!(load.loaded());
+
+        let agents = [pane("A", "/elsewhere")];
+        let assignment = unified::assign_agents(&[], &agents);
+        let rows = display_rows_for(
+            true,
+            &RowInputs {
+                visible_worktrees: &[],
+                all_worktrees: &[],
+                agents: &agents,
+                assignment: &assignment,
+                orphan_count: 0,
+                filter: "",
+                outside_group: load.loaded(),
+                home: None,
+            },
+        );
+        assert_eq!(
+            rows,
+            vec![
+                DisplayRow::OutsideHeader,
+                DisplayRow::Agent {
+                    pane_id: "A".into(),
+                    parent: None
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn listed_fetch_reports_its_generation() {
+        let event = fetch_result_event(3, Some(vec![]), HashMap::new);
+        assert!(matches!(event, AppEvent::WorktreeList(3, ref w, _) if w.is_empty()));
+    }
+
+    #[test]
+    fn fetch_of_a_superseded_project_is_ignored() {
+        let mut load = WorktreeLoad::default();
+        let old = load.generation();
+        load.restart();
+        assert!(!load.complete(old), "stale list accepted");
+        assert!(!load.loaded());
+        assert!(load.complete(load.generation()));
+        assert!(load.loaded());
+    }
+
+    #[test]
+    fn project_switch_drops_old_rows_until_the_new_list() {
+        let orphan = OrphanEntry {
+            project: "alpha".into(),
+            name: "old-env".into(),
+            path: "/ws/alpha/old-env".into(),
+            status: worktree_info::InfoStatus {
+                label: "gone".into(),
+                tone: worktree_info::Tone::Muted,
+            },
+            id: None,
+            details: vec![],
+            hint: None,
+        };
+        let mut worktrees = vec![worktree("/ws/alpha", "a", true)];
+        let mut all = worktrees.clone();
+        let mut orphans = vec![orphan];
+        let mut load = WorktreeLoad::default();
+        assert!(load.complete(load.generation()));
+
+        clear_project_lists(&mut worktrees, &mut all, &mut orphans, &mut load);
+        assert!(worktrees.is_empty() && all.is_empty());
+        assert!(orphans.is_empty(), "old project's orphans stay selectable");
+        assert!(!load.loaded());
+        // refresh() leaves the (empty) rows alone until the new list arrives.
+        assert!(!refresh_rebuilds_rows(true, &load));
+        assert!(!refresh_rebuilds_rows(false, &load));
+        assert!(load.complete(load.generation()));
+        assert!(refresh_rebuilds_rows(true, &load));
+        assert!(!refresh_rebuilds_rows(false, &load));
+    }
+
+    #[test]
     fn agents_tab_mode_has_no_agent_rows() {
         let wts = vec![PathBuf::from("/ws/a"), PathBuf::from("/ws/b")];
         let agents = [pane("A", "/ws/b/src"), pane("B", "/elsewhere")];
@@ -2760,6 +2926,7 @@ mod tests {
             orphan_count: 1,
             filter: "",
             outside_group: true,
+            home: None,
         };
         assert_eq!(
             display_rows_for(false, &inputs),

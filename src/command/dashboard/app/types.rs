@@ -20,8 +20,11 @@ pub enum AppEvent {
     GitStatus(PathBuf, GitStatus),
     /// GitHub status update for a repo root
     GithubStatus(PathBuf, HashMap<String, BranchSummary>),
-    /// Full worktree list from background fetch
-    WorktreeList(Vec<WorktreeInfo>, HashMap<PathBuf, String>),
+    /// Full worktree list from a background fetch of the given generation
+    /// (see `WorktreeLoad`).
+    WorktreeList(u64, Vec<WorktreeInfo>, HashMap<PathBuf, String>),
+    /// A background worktree fetch of the given generation failed.
+    WorktreeListFailed(u64),
     /// Project names for all known repositories (repo_key -> project).
     ProjectNames(HashMap<PathBuf, String>),
     /// Result of an external worktree info provider run.

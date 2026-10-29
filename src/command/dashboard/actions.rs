@@ -3,6 +3,7 @@
 use super::app::{App, CommandPaletteState, DashboardTab, PaletteCommand, ViewMode};
 use super::diff_ops::DiffOps;
 use super::keymap::Context;
+use super::unified::DisplayRow;
 
 /// All possible actions in the dashboard.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -489,6 +490,22 @@ fn without_tab_switch(mut cmds: Vec<PaletteCommand>, unified: bool) -> Vec<Palet
     cmds
 }
 
+/// Enter on an agent sub-row jumps to the agent's pane: label the jump
+/// command "Jump to agent" there instead of "Jump to worktree".
+pub(super) fn with_jump_label(
+    mut cmds: Vec<PaletteCommand>,
+    row: Option<&DisplayRow>,
+) -> Vec<PaletteCommand> {
+    if matches!(row, Some(DisplayRow::Agent { .. })) {
+        for command in &mut cmds {
+            if command.action == Action::JumpToSelectedWorktree {
+                command.label = "Jump to agent";
+            }
+        }
+    }
+    cmds
+}
+
 /// Palette commands of the Worktrees table.
 fn worktree_palette_commands() -> Vec<PaletteCommand> {
     vec![
@@ -701,7 +718,7 @@ fn palette_commands(ctx: Context, app: &App) -> Vec<PaletteCommand> {
             }
             cmds
         }
-        Context::WorktreeNormal => worktree_palette_commands(),
+        Context::WorktreeNormal => with_jump_label(worktree_palette_commands(), app.selected_row()),
         Context::DiffNormal => {
             let mut cmds = vec![
                 PaletteCommand {
@@ -801,5 +818,31 @@ mod tests {
 
         let tabs = without_tab_switch(worktree_palette_commands(), false);
         assert!(tabs.iter().any(|c| c.label == "Switch to agents"));
+    }
+
+    fn jump_labels(cmds: &[PaletteCommand]) -> Vec<&'static str> {
+        cmds.iter()
+            .filter(|c| c.action == Action::JumpToSelectedWorktree)
+            .map(|c| c.label)
+            .collect()
+    }
+
+    #[test]
+    fn jump_label_names_the_agent_on_agent_rows() {
+        let agent = DisplayRow::Agent {
+            pane_id: "%1".into(),
+            parent: Some(0),
+        };
+        let outside = DisplayRow::Agent {
+            pane_id: "%2".into(),
+            parent: None,
+        };
+        let labels = |row: Option<&DisplayRow>| {
+            jump_labels(&with_jump_label(worktree_palette_commands(), row))
+        };
+        assert_eq!(labels(Some(&agent)), ["Jump to agent"]);
+        assert_eq!(labels(Some(&outside)), ["Jump to agent"]);
+        assert_eq!(labels(Some(&DisplayRow::Worktree(0))), ["Jump to worktree"]);
+        assert_eq!(labels(None), ["Jump to worktree"]);
     }
 }

@@ -1,9 +1,9 @@
 //! Pure logic for the unified worktree view: agents as sub-rows of the
 //! worktree they work in.
 
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::multiplexer::{AgentPane, AgentStatus};
 use crate::util::canon_or_self;
@@ -34,6 +34,8 @@ pub struct RowInputs<'a> {
     pub orphan_count: usize,
     pub filter: &'a str,
     pub outside_group: bool,
+    /// `$HOME`, to match outside agents by their displayed (`~/…`) directory.
+    pub home: Option<&'a Path>,
 }
 
 /// For each agent, the index into `worktree_paths` of the deepest worktree
@@ -48,10 +50,21 @@ pub fn assign_agents(worktree_paths: &[PathBuf], agents: &[AgentPane]) -> Vec<Op
                 .iter()
                 .enumerate()
                 .filter(|(_, wt)| path.starts_with(wt))
-                .max_by_key(|(_, wt)| wt.components().count())
+                // The first of equally deep (duplicate) paths, as the row
+                // builder looks worktrees up by first position.
+                .min_by_key(|(_, wt)| Reverse(wt.components().count()))
                 .map(|(i, _)| i)
         })
         .collect()
+}
+
+/// Directory with `$HOME` shortened to `~`, as outside-group rows show it.
+pub fn short_dir(path: &Path, home: Option<&Path>) -> String {
+    match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
 }
 
 fn status_rank(a: &AgentPane) -> u8 {
@@ -85,12 +98,15 @@ fn title_contains(agent: &AgentPane, filter: &str) -> bool {
         .is_some_and(|t| t.to_lowercase().contains(filter))
 }
 
-fn matches_filter(agent: &AgentPane, filter: &str) -> bool {
+/// Title, raw directory or displayed (`~/…`) directory match.
+fn matches_filter(agent: &AgentPane, filter: &str, home: Option<&Path>) -> bool {
     if filter.is_empty() {
         return true;
     }
     let f = filter.to_lowercase();
-    title_contains(agent, &f) || agent.path.to_string_lossy().to_lowercase().contains(&f)
+    title_contains(agent, &f)
+        || agent.path.to_string_lossy().to_lowercase().contains(&f)
+        || short_dir(&agent.path, home).to_lowercase().contains(&f)
 }
 
 pub fn build_display_rows(inputs: &RowInputs) -> Vec<DisplayRow> {
@@ -108,11 +124,16 @@ pub fn build_display_rows(inputs: &RowInputs) -> Vec<DisplayRow> {
         .collect();
 
     let mut rows = Vec::new();
+    // A duplicate path lists its agents once, under its first row.
+    let mut listed = HashSet::new();
     for (vi, canon) in canon_visible.iter().enumerate() {
         rows.push(DisplayRow::Worktree(vi));
         let Some(ai) = canon_all.iter().position(|p| p == canon) else {
             continue;
         };
+        if !listed.insert(ai) {
+            continue;
+        }
         let members: Vec<usize> = assignment
             .iter()
             .enumerate()
@@ -133,7 +154,9 @@ pub fn build_display_rows(inputs: &RowInputs) -> Vec<DisplayRow> {
         let outside: Vec<usize> = assignment
             .iter()
             .enumerate()
-            .filter(|(i, a)| a.is_none() && matches_filter(&inputs.agents[*i], inputs.filter))
+            .filter(|(i, a)| {
+                a.is_none() && matches_filter(&inputs.agents[*i], inputs.filter, inputs.home)
+            })
             .map(|(i, _)| i)
             .collect();
         if !outside.is_empty() {
@@ -268,6 +291,7 @@ mod tests {
             orphan_count: 1,
             filter,
             outside_group,
+            home: None,
         })
     }
 
@@ -323,6 +347,60 @@ mod tests {
         assert!(is_selectable(&DisplayRow::Worktree(0)));
         assert!(is_selectable(&ag("A", None)));
         assert!(is_selectable(&DisplayRow::Orphan(0)));
+    }
+
+    #[test]
+    fn duplicate_worktree_paths_assign_and_list_under_the_first() {
+        let wts = paths(&["/ws/a", "/ws/a"]);
+        let agents = [agent("A", "/ws/a/src")];
+        assert_eq!(assign_agents(&wts, &agents), vec![Some(0)]);
+        assert_eq!(
+            rows(&wts, &wts, &agents, "", true),
+            vec![
+                DisplayRow::Worktree(0),
+                ag("A", Some(0)),
+                DisplayRow::Worktree(1),
+                DisplayRow::Orphan(0),
+            ]
+        );
+    }
+
+    #[test]
+    fn outside_filter_matches_the_home_shortened_dir() {
+        let wts = paths(&["/ws/a"]);
+        let agents = [agent("B", "/home/u/work/x")];
+        let assignment = assign_agents(&wts, &agents);
+        let rows_for = |filter: &str| {
+            build_display_rows(&RowInputs {
+                visible_worktrees: &wts,
+                all_worktrees: &wts,
+                agents: &agents,
+                assignment: &assignment,
+                orphan_count: 0,
+                filter,
+                outside_group: true,
+                home: Some(Path::new("/home/u")),
+            })
+        };
+        assert!(rows_for("~/work").contains(&ag("B", None)));
+        assert!(rows_for("/home/u/work").contains(&ag("B", None)));
+        assert!(!rows_for("~/other").contains(&ag("B", None)));
+    }
+
+    #[test]
+    fn short_dir_shortens_home() {
+        let home = Path::new("/home/u");
+        assert_eq!(
+            short_dir(Path::new("/home/u/work/x"), Some(home)),
+            "~/work/x"
+        );
+        assert_eq!(short_dir(home, Some(home)), "~");
+        assert_eq!(short_dir(Path::new("/srv/x"), Some(home)), "/srv/x");
+        assert_eq!(
+            short_dir(Path::new("/home/user2/x"), Some(home)),
+            "/home/user2/x"
+        );
+        assert_eq!(short_dir(Path::new("/home/u/x"), None), "/home/u/x");
     }
 
     #[test]

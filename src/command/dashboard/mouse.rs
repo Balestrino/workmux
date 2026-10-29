@@ -4,7 +4,7 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use unicode_width::UnicodeWidthStr;
 
-use super::actions::{Action, apply_action};
+use super::actions::{Action, apply_action, with_jump_label};
 use super::app::{
     App, DashboardTab, MouseRowClick, MouseRowId, PaletteCommand, RowContextKind, RowContextMenu,
     ViewMode,
@@ -138,7 +138,10 @@ fn open_row_context(app: &mut App, target: MouseTarget, column: u16, row: u16) -
             if !app.display_rows.get(index).is_some_and(offers_row_context) {
                 return false;
             }
-            (RowContextKind::Worktree, worktree_context_commands())
+            (
+                RowContextKind::Worktree,
+                with_jump_label(worktree_context_commands(), app.display_rows.get(index)),
+            )
         }
     };
     app.last_mouse_row_click = None;

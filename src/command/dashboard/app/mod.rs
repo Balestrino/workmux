@@ -7,6 +7,7 @@ mod events;
 mod preview;
 mod types;
 mod worktrees;
+use worktrees::WorktreeLoad;
 #[cfg(test)]
 pub(super) use worktrees::resolve_project_name;
 
@@ -155,9 +156,10 @@ pub struct App {
     pub active_tab: DashboardTab,
     /// Full worktree list from background fetch (baseline for filtering/sorting)
     all_worktrees: Vec<WorktreeInfo>,
-    /// A worktree list has arrived for the current project selection. Until
-    /// then every agent would look unassigned, so the outside group waits.
-    worktrees_loaded: bool,
+    /// Whether a worktree fetch has completed for the current project
+    /// selection (and which fetch counts). Until then every agent would look
+    /// unassigned, so the outside group waits.
+    worktree_load: WorktreeLoad,
     /// Filtered and sorted worktree list for display
     pub worktrees: Vec<WorktreeInfo>,
     /// Table state for the worktree view
@@ -330,7 +332,7 @@ impl App {
                 DashboardTab::Agents
             },
             all_worktrees: Vec::new(),
-            worktrees_loaded: false,
+            worktree_load: WorktreeLoad::default(),
             worktrees: Vec::new(),
             worktree_table_state: TableState::default(),
             selected_worktree_path: None,
@@ -477,8 +479,9 @@ impl App {
         // Apply name filter, stale filter, sort, and restore selection
         self.apply_filters();
 
-        // Agent sub-rows follow the reloaded agents.
-        if self.unified {
+        // Agent sub-rows follow the reloaded agents (not while a new
+        // project's list is pending).
+        if worktrees::refresh_rebuilds_rows(self.unified, &self.worktree_load) {
             self.rebuild_display_rows();
             self.update_worktree_preview();
         }

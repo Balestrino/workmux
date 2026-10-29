@@ -287,8 +287,8 @@ pub struct DashboardConfig {
     /// `worktree_columns` stay readable by builds without these columns.
     pub worktree_extra_columns: Option<Vec<WorktreeColumn>>,
 
-    /// Fork-only: show a single worktree view with agents as sub-rows instead
-    /// of separate Worktrees and Agents tabs. Default: false.
+    /// Fork-only: `true` restores the separate Agents and Worktrees tabs.
+    /// Default `false`: a single worktree view with agents as sub-rows.
     pub agents_tab: Option<bool>,
 
     /// Default sort mode for the agent list: "priority", "project", "recency", "natural".
@@ -545,7 +545,6 @@ impl DashboardConfig {
     }
 
     /// Whether the separate Agents tab is shown (fork-only). Default: false.
-    #[allow(dead_code)] // Task 2 of the unified view removes this allow
     pub fn agents_tab(&self) -> bool {
         self.agents_tab.unwrap_or(false)
     }

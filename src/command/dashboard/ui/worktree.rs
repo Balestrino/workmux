@@ -1,7 +1,5 @@
 //! Worktree table rendering for the dashboard worktree view.
 
-use std::path::Path;
-
 use ratatui::{
     Frame,
     buffer::Buffer,
@@ -16,7 +14,7 @@ use crate::multiplexer::AgentPane;
 
 use super::super::agent;
 use super::super::app::{App, WorktreePanels};
-use super::super::unified::DisplayRow;
+use super::super::unified::{self, DisplayRow};
 use super::super::worktree_info::{InfoDetail, InfoEntry, InfoStatus, OrphanEntry, Tone};
 use super::format;
 use super::format::{
@@ -477,21 +475,12 @@ fn agent_line(
     Line::from(spans)
 }
 
-/// Directory with `$HOME` shortened to `~`.
-fn short_dir(path: &Path, home: Option<&Path>) -> String {
-    match home.and_then(|home| path.strip_prefix(home).ok()) {
-        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
-        Some(rest) => format!("~/{}", rest.display()),
-        None => path.display().to_string(),
-    }
-}
-
 /// Sub-row line of `agent` from the App's Agents-tab status helpers.
 fn agent_row_line(app: &App, agent: &AgentPane, outside: bool) -> Line<'static> {
     let elapsed = app
         .get_elapsed(agent)
         .map(|secs| format::elapsed_time_line(app.format_duration(secs), Some(secs), &app.palette));
-    let dir = outside.then(|| short_dir(&agent.path, home::home_dir().as_deref()));
+    let dir = outside.then(|| unified::short_dir(&agent.path, home::home_dir().as_deref()));
     agent_line(
         app.get_status_display(agent),
         elapsed,
@@ -2075,21 +2064,6 @@ mod tests {
 
     #[test]
     fn outside_agent_row_shows_short_dir() {
-        let home = std::path::Path::new("/home/u");
-        assert_eq!(
-            short_dir(std::path::Path::new("/home/u/work/x"), Some(home)),
-            "~/work/x"
-        );
-        assert_eq!(short_dir(home, Some(home)), "~");
-        assert_eq!(
-            short_dir(std::path::Path::new("/srv/x"), Some(home)),
-            "/srv/x"
-        );
-        assert_eq!(
-            short_dir(std::path::Path::new("/home/user2/x"), Some(home)),
-            "/home/user2/x"
-        );
-
         let columns = visible_columns(&DEFAULT_WORKTREE_COLUMNS, true, false, true);
         let rows = vec![spanning_row_data(working_line(Some("~/work/x"), false))];
         let buffer = render(&columns, rows, 80, None);
