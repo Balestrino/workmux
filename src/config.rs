@@ -287,6 +287,10 @@ pub struct DashboardConfig {
     /// `worktree_columns` stay readable by builds without these columns.
     pub worktree_extra_columns: Option<Vec<WorktreeColumn>>,
 
+    /// Fork-only: show a single worktree view with agents as sub-rows instead
+    /// of separate Worktrees and Agents tabs. Default: false.
+    pub agents_tab: Option<bool>,
+
     /// Default sort mode for the agent list: "priority", "project", "recency", "natural".
     /// Used when the dashboard has no persisted sort preference.
     /// Default: "priority"
@@ -538,6 +542,12 @@ impl DashboardConfig {
     /// Default: false
     pub fn show_check_counts(&self) -> bool {
         self.show_check_counts.unwrap_or(false)
+    }
+
+    /// Whether the separate Agents tab is shown (fork-only). Default: false.
+    #[allow(dead_code)] // Task 2 of the unified view removes this allow
+    pub fn agents_tab(&self) -> bool {
+        self.agents_tab.unwrap_or(false)
     }
 
     /// Whether the dashboard closes after jumping to an agent or worktree.
@@ -3409,6 +3419,7 @@ impl Config {
                 .dashboard
                 .worktree_extra_columns
                 .or(self.dashboard.worktree_extra_columns),
+            agents_tab: project.dashboard.agents_tab.or(self.dashboard.agents_tab),
             sort_mode: project.dashboard.sort_mode.or(self.dashboard.sort_mode),
             close_on_jump: project
                 .dashboard
@@ -3968,6 +3979,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 #   agent_columns: [number, agent, project, worktree, git, pr, status, time, title]
 #   worktree_columns: [number, project, worktree, git, pr, env, mux, age, agent]
 #   worktree_extra_columns: ["env:cpu", "env:mem", base, env_id] # inserted after env
+#   agents_tab: false              # fork-only: true shows separate Worktrees and Agents tabs
 #   sort_mode: priority
 #   close_on_jump: true
 #   input_exit_key: Esc # Esc or Ctrl+<letter> (a-z)
@@ -4481,6 +4493,21 @@ mod tests {
             global.merge(Config::default()).dashboard.agent_columns(),
             vec![AgentColumn::Status, AgentColumn::Title]
         );
+    }
+
+    #[test]
+    fn agents_tab_defaults_to_false() {
+        assert!(!Config::default().dashboard.agents_tab());
+    }
+
+    #[test]
+    fn agents_tab_parses_and_project_overrides_global() {
+        let config: Config =
+            serde_yaml::from_str("dashboard:\n  agents_tab: true\n").expect("config parses");
+        assert!(config.dashboard.agents_tab());
+        let global: Config = serde_yaml::from_str("dashboard:\n  agents_tab: true\n").unwrap();
+        let project: Config = serde_yaml::from_str("dashboard:\n  agents_tab: false\n").unwrap();
+        assert!(!global.merge(project).dashboard.agents_tab());
     }
 
     #[test]
