@@ -495,7 +495,14 @@ impl App {
         let is_stale = self.is_stale(agent);
 
         // Map status enum to icon and color
+        // Background agents keep `Working` but show their own icon and no
+        // spinner: the spinner means an active turn.
         let (icon, base_color, is_working) = match agent.status {
+            Some(AgentStatus::Working) if agent.background => (
+                self.config.status_icons.background(),
+                self.palette.info,
+                false,
+            ),
             Some(AgentStatus::Working) => {
                 (self.config.status_icons.working(), self.palette.info, true)
             }

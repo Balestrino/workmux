@@ -118,7 +118,7 @@ impl<'a> RowContext<'a> {
         let is_selected = selected_idx == Some(idx);
 
         let (status_icon_spans, status_icon_style) =
-            super::super::ui::status_icon_and_style(app, agent.status, is_stale);
+            super::super::ui::status_icon_and_style(app, agent.status, agent.background, is_stale);
         let status_color = status_icon_style.fg.unwrap_or(Color::Reset);
 
         let elapsed = agent
@@ -223,6 +223,7 @@ impl<'a> RowContext<'a> {
                 .map(|pr| format!("#{}", pr.number))
                 .unwrap_or_default(),
             TokenId::StatusLabel => match self.agent.status {
+                Some(AgentStatus::Working) if self.agent.background => "Background".to_string(),
                 Some(AgentStatus::Working) => "Working".to_string(),
                 Some(AgentStatus::Waiting) => "Waiting".to_string(),
                 Some(AgentStatus::Done) => "Done".to_string(),
@@ -875,6 +876,12 @@ mod tests {
             make_context(&agent, None, 0).resolve(TokenId::StatusLabel),
             "Working"
         );
+        agent.background = true;
+        assert_eq!(
+            make_context(&agent, None, 0).resolve(TokenId::StatusLabel),
+            "Background"
+        );
+        agent.background = false;
         agent.status = Some(AgentStatus::Waiting);
         assert_eq!(
             make_context(&agent, None, 0).resolve(TokenId::StatusLabel),

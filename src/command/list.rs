@@ -76,7 +76,20 @@ fn format_pr_status(pr_info: Option<crate::github::PrSummary>) -> String {
 }
 
 /// Format a single agent status as either an icon (TTY) or text label (piped).
-fn format_status_label(status: AgentStatus, config: &config::Config, use_icons: bool) -> String {
+/// `background` marks a `Working` agent idle with live background work.
+fn format_status_label(
+    status: AgentStatus,
+    background: bool,
+    config: &config::Config,
+    use_icons: bool,
+) -> String {
+    if background && status == AgentStatus::Working {
+        return if use_icons {
+            config.status_icons.background().to_string()
+        } else {
+            "background".to_string()
+        };
+    }
     if use_icons {
         match status {
             AgentStatus::Working => config.status_icons.working().to_string(),
@@ -104,14 +117,21 @@ fn format_agent_status(
 
     let total = summary.statuses.len();
     if total == 1 {
-        format_status_label(summary.statuses[0], config, use_icons)
+        format_status_label(
+            summary.statuses[0],
+            summary.background > 0,
+            config,
+            use_icons,
+        )
     } else {
         // Multiple agents: show breakdown
-        let working = summary
+        let all_working = summary
             .statuses
             .iter()
             .filter(|s| matches!(s, AgentStatus::Working))
             .count();
+        let background = summary.background.min(all_working);
+        let working = all_working - background;
         let waiting = summary
             .statuses
             .iter()
@@ -125,15 +145,19 @@ fn format_agent_status(
 
         let mut parts = Vec::new();
         if working > 0 {
-            let label = format_status_label(AgentStatus::Working, config, use_icons);
+            let label = format_status_label(AgentStatus::Working, false, config, use_icons);
             parts.push(format!("{}{}", working, label));
         }
+        if background > 0 {
+            let label = format_status_label(AgentStatus::Working, true, config, use_icons);
+            parts.push(format!("{}{}", background, label));
+        }
         if waiting > 0 {
-            let label = format_status_label(AgentStatus::Waiting, config, use_icons);
+            let label = format_status_label(AgentStatus::Waiting, false, config, use_icons);
             parts.push(format!("{}{}", waiting, label));
         }
         if done > 0 {
-            let label = format_status_label(AgentStatus::Done, config, use_icons);
+            let label = format_status_label(AgentStatus::Done, false, config, use_icons);
             parts.push(format!("{}{}", done, label));
         }
         parts.join(" ")
@@ -328,4 +352,54 @@ pub fn run(show_pr: bool, json: bool, all: bool, filter: &[String]) -> Result<()
     println!("{table}");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn summary(statuses: Vec<AgentStatus>, background: usize) -> AgentStatusSummary {
+        AgentStatusSummary {
+            statuses,
+            background,
+        }
+    }
+
+    #[test]
+    fn piped_label_for_background_agent_is_background() {
+        let config = config::Config::default();
+        let single = summary(vec![AgentStatus::Working], 1);
+        assert_eq!(
+            format_agent_status(Some(&single), &config, false),
+            "background"
+        );
+
+        let mixed = summary(
+            vec![
+                AgentStatus::Working,
+                AgentStatus::Working,
+                AgentStatus::Done,
+            ],
+            1,
+        );
+        assert_eq!(
+            format_agent_status(Some(&mixed), &config, false),
+            "1working 1background 1done"
+        );
+    }
+
+    #[test]
+    fn icon_for_background_agent_is_background_icon() {
+        let config = config::Config::default();
+        let single = summary(vec![AgentStatus::Working], 1);
+        assert_eq!(
+            format_agent_status(Some(&single), &config, true),
+            config.status_icons.background()
+        );
+        let working = summary(vec![AgentStatus::Working], 0);
+        assert_eq!(
+            format_agent_status(Some(&working), &config, true),
+            config.status_icons.working()
+        );
+    }
 }

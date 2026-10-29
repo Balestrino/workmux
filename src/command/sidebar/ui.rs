@@ -932,14 +932,15 @@ fn pad_spans_to_width(spans: &mut Vec<Span<'static>>, width: usize, bg: Option<C
 }
 
 fn status_icon_extra_width(ctx: &RowContext<'_>) -> usize {
-    status_icon_overhang(ctx.agent.status, ctx.is_stale)
+    status_icon_overhang(ctx.agent.status, ctx.agent.background, ctx.is_stale)
 }
 
-/// Columns a status icon draws past its measured width. The waiting, done and
-/// sleeping glyphs are drawn double width while measuring one, so whatever sits
-/// beside them needs the extra column reserved.
-fn status_icon_overhang(status: Option<AgentStatus>, is_stale: bool) -> usize {
-    if is_stale || matches!(status, Some(AgentStatus::Waiting | AgentStatus::Done)) {
+/// Columns a status icon draws past its measured width. The waiting, done,
+/// background and sleeping glyphs are drawn double width while measuring one,
+/// so whatever sits beside them needs the extra column reserved.
+fn status_icon_overhang(status: Option<AgentStatus>, background: bool, is_stale: bool) -> usize {
+    let background = background && status == Some(AgentStatus::Working);
+    if is_stale || background || matches!(status, Some(AgentStatus::Waiting | AgentStatus::Done)) {
         1
     } else {
         0
@@ -1046,17 +1047,18 @@ fn group_status_counts(app: &SidebarApp, label: &str) -> Vec<GroupStatusCount> {
     };
     // An agent with no status and no staleness has no icon of its own, so it
     // is left out rather than tallied behind a blank.
-    let mut counts: Vec<usize> = vec![0; 4];
+    let mut counts: Vec<usize> = vec![0; 5];
     for agent in &app.agents {
         if group_label(agent, group_by) != label {
             continue;
         }
         let bucket = if app.stale_pane_ids.contains(&agent.pane_id) {
-            Some(3)
+            Some(4)
         } else {
             match agent.status {
                 Some(AgentStatus::Waiting) => Some(0),
                 Some(AgentStatus::Done) => Some(1),
+                Some(AgentStatus::Working) if agent.background => Some(3),
                 Some(AgentStatus::Working) => Some(2),
                 None => None,
             }
@@ -1067,19 +1069,20 @@ fn group_status_counts(app: &SidebarApp, label: &str) -> Vec<GroupStatusCount> {
     }
 
     let buckets = [
-        (Some(AgentStatus::Waiting), false),
-        (Some(AgentStatus::Done), false),
-        (Some(AgentStatus::Working), false),
-        (None, true),
+        (Some(AgentStatus::Waiting), false, false),
+        (Some(AgentStatus::Done), false, false),
+        (Some(AgentStatus::Working), false, false),
+        (Some(AgentStatus::Working), true, false),
+        (None, false, true),
     ];
     counts
         .into_iter()
         .zip(buckets)
         .filter(|(count, _)| *count > 0)
-        .map(|(count, (status, stale))| GroupStatusCount {
-            icon: status_icon_and_style(app, status, stale).0,
+        .map(|(count, (status, background, stale))| GroupStatusCount {
+            icon: status_icon_and_style(app, status, background, stale).0,
             count,
-            pad: status_icon_overhang(status, stale),
+            pad: status_icon_overhang(status, background, stale),
         })
         .collect()
 }
@@ -1708,10 +1711,12 @@ fn render_tile_list(f: &mut Frame, app: &mut SidebarApp, area: Rect) {
 ///
 /// Returns `(spans, base_style)` where `spans` contains tmux style codes parsed into
 /// individual `(text, style)` pairs, and `base_style` is the fallback style (used for
-/// stripe color, etc.).
+/// stripe color, etc.). `background` marks a `Working` agent idle with live
+/// background work: it gets the background icon and no spinner.
 pub(crate) fn status_icon_and_style(
     app: &SidebarApp,
     status: Option<AgentStatus>,
+    background: bool,
     is_stale: bool,
 ) -> (Vec<(String, Style)>, Style) {
     let use_nf = crate::nerdfont::is_enabled();
@@ -1726,6 +1731,15 @@ pub(crate) fn status_icon_and_style(
         return (vec![(icon.to_string(), style)], style);
     }
     match status {
+        Some(AgentStatus::Working) if background => {
+            let base_style = Style::default().fg(app.palette.info);
+            let spans = if use_nf && app.status_icons.background.is_none() {
+                vec![("\u{f051f}".to_string(), base_style)] // 󰔟 nf-md-timer_sand
+            } else {
+                tmux_style::parse_tmux_styles(app.status_icons.background(), base_style)
+            };
+            (spans, base_style)
+        }
         Some(AgentStatus::Working) => {
             let base_style = Style::default().fg(app.palette.info);
             let spans = match &app.status_icons.working {
@@ -2491,6 +2505,56 @@ mod tests {
         // The tally reaches the drawn header, not just the helper.
         let lines = rendered(&mut app, 36, 26);
         assert!(lines[0].contains('1'), "header was {:?}", lines[0]);
+    }
+
+    #[test]
+    fn background_agent_shows_its_icon_without_spinner() {
+        let mut app = SidebarApp::test_with_template_error(TemplateError {
+            location: String::new(),
+            message: String::new(),
+        });
+        let (spans, style) = status_icon_and_style(&app, Some(AgentStatus::Working), true, false);
+        assert_eq!(spans, vec![("\u{23f3}".to_string(), style)]);
+        assert_eq!(style.fg, Some(app.palette.info));
+
+        app.status_icons.background = Some("bg".to_string());
+        let (spans, _) = status_icon_and_style(&app, Some(AgentStatus::Working), true, false);
+        let text: String = spans.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(text, "bg");
+    }
+
+    #[test]
+    fn a_header_tallies_background_agents_apart_from_working() {
+        let mut app = grouped_compact_app();
+        app.agents[0].background = true;
+        app.rebuild_rows();
+        app.refresh_stale_pane_ids();
+
+        let tally: Vec<(String, usize)> = group_status_counts(&app, "api")
+            .iter()
+            .map(|status| {
+                (
+                    status.icon.iter().map(|(text, _)| text.as_str()).collect(),
+                    status.count,
+                )
+            })
+            .collect();
+        assert_eq!(
+            tally,
+            vec![
+                ("\u{1f4ac}".to_string(), 1),
+                ("\u{2705}".to_string(), 1),
+                ("\u{23f3}".to_string(), 1),
+            ]
+        );
+
+        let lines = rendered(&mut app, 40, 12);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains('\u{23f3}') && l.contains("auth-refresh")),
+            "{lines:?}"
+        );
     }
 
     #[test]

@@ -837,10 +837,10 @@ impl SidebarApp {
 
         if !self.has_loaded_snapshot
             || (self.status_icons.working.is_none()
-                && self
-                    .agents
-                    .iter()
-                    .any(|agent| agent.status == Some(crate::multiplexer::AgentStatus::Working)))
+                && self.agents.iter().any(|agent| {
+                    agent.status == Some(crate::multiplexer::AgentStatus::Working)
+                        && !agent.background
+                }))
             || self
                 .check_statuses
                 .values()

@@ -30,6 +30,9 @@ struct StatusEntry {
     session: Option<String>,
     window_name: Option<String>,
     updated_ts: Option<u64>,
+    /// Idle with live background work; `status` stays "working".
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    background: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     git: Option<GitInfo>,
 }
@@ -159,6 +162,16 @@ fn status_label(status: Option<AgentStatus>) -> String {
     }
 }
 
+/// Status column of the table: the JSON label, qualified for the background
+/// state so the human view tells it apart from an active turn.
+fn table_status(entry: &StatusEntry) -> String {
+    if entry.background {
+        format!("{} (background)", entry.status)
+    } else {
+        entry.status.clone()
+    }
+}
+
 fn optional_name(name: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
@@ -193,6 +206,7 @@ fn status_entry(
         session: optional_name(&agent.session),
         window_name: optional_name(&agent.window_name),
         updated_ts: agent.updated_ts,
+        background: agent.background,
         git,
     }
 }
@@ -411,7 +425,7 @@ pub fn run(worktrees: &[String], json: bool, all: bool, show_git: bool) -> Resul
                         project: e.project.clone().unwrap_or("-".to_string()),
                         session: e.session.clone().unwrap_or("-".to_string()),
                         worktree,
-                        status: e.status.clone(),
+                        status: table_status(e),
                         elapsed: e
                             .elapsed_secs
                             .map(util::format_elapsed_secs)
@@ -479,8 +493,27 @@ mod tests {
             session: None,
             window_name: None,
             updated_ts: None,
+            background: false,
             git: None,
         }
+    }
+
+    #[test]
+    fn background_entry_serializes_flag() {
+        let background = StatusEntry {
+            status: "working".to_string(),
+            background: true,
+            ..entry("/a")
+        };
+        let json = serde_json::to_value(&background).unwrap();
+        assert_eq!(json["status"], "working");
+        assert_eq!(json["background"], true);
+
+        let plain = serde_json::to_value(entry("/a")).unwrap();
+        assert!(plain.get("background").is_none(), "{plain}");
+
+        assert_eq!(table_status(&background), "working (background)");
+        assert_eq!(table_status(&entry("/a")), "done");
     }
 
     #[test]
