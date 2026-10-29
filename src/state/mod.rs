@@ -17,6 +17,7 @@ use tracing::warn;
 
 use crate::agent_identity::classify_agent_kind;
 use crate::multiplexer::{AgentStatus, Multiplexer};
+use background::{BackgroundItem, HookEvent};
 
 pub use store::StateStore;
 pub(crate) use store::{AgentStateCache, AgentStateSource, ResurrectionAgentState};
@@ -33,6 +34,22 @@ pub enum PromptUpdate {
     Clear,
 }
 
+/// A hook event to apply to the agent's background state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusEvent {
+    pub event: HookEvent,
+    /// The agent's transcript file, when the hook names one.
+    pub transcript: Option<PathBuf>,
+}
+
+/// Status stored by a write, and whether the agent is left in the
+/// background state (turn idle, background work still running).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolvedStatus {
+    pub status: AgentStatus,
+    pub background: bool,
+}
+
 /// Persist an agent state update to the StateStore.
 ///
 /// For tmux, merges state from the same pane process and server lifecycle so
@@ -44,8 +61,14 @@ pub enum PromptUpdate {
 /// - `prompt` keeps, replaces or removes the stored prompt.
 /// - If `cwd` (the agent's reported directory) is Some, uses it. If None,
 ///   preserves the existing one.
+/// - If `event` is Some, it is applied to the background state and the
+///   resulting status replaces `status`. If None, `status` is stored as given
+///   and the background state is preserved.
 ///
-/// Logs warnings on failure without propagating errors (best-effort persistence).
+/// Returns the stored status, or `None` when nothing with a status was
+/// persisted. Logs warnings on failure without propagating errors
+/// (best-effort persistence).
+#[allow(clippy::too_many_arguments)]
 pub fn persist_agent_update(
     mux: &dyn Multiplexer,
     pane_id: &str,
@@ -54,14 +77,10 @@ pub fn persist_agent_update(
     agent_session_id: Option<String>,
     prompt: PromptUpdate,
     cwd: Option<PathBuf>,
-) {
-    if status == Some(AgentStatus::Working) && mux.name() == "tmux" {
-        let tmux = crate::multiplexer::TmuxBackend::for_socket(&mux.instance_id());
-        if let Err(error) = tmux.wake_agent(pane_id) {
-            warn!(%pane_id, %error, "failed to clear agent sleep state");
-        }
-    }
-    persist_agent_snapshot(
+    event: Option<StatusEvent>,
+) -> Option<ResolvedStatus> {
+    let has_event = event.is_some();
+    let resolved = persist_agent_snapshot(
         mux,
         pane_id,
         status,
@@ -69,8 +88,24 @@ pub fn persist_agent_update(
         agent_session_id,
         prompt,
         cwd,
+        event,
         true,
     );
+    // An event decides the status itself; an agent left in the background
+    // state is idle, so it does not wake a pane the user put to sleep.
+    let wakes = match resolved {
+        Some(resolved) if has_event => {
+            resolved.status == AgentStatus::Working && !resolved.background
+        }
+        _ => status == Some(AgentStatus::Working),
+    };
+    if wakes && mux.name() == "tmux" {
+        let tmux = crate::multiplexer::TmuxBackend::for_socket(&mux.instance_id());
+        if let Err(error) = tmux.wake_agent(pane_id) {
+            warn!(%pane_id, %error, "failed to clear agent sleep state");
+        }
+    }
+    resolved
 }
 
 /// Register a live agent pane without assigning it an activity status.
@@ -93,6 +128,7 @@ pub fn persist_agent_registration(
         agent_session_id,
         prompt,
         cwd,
+        None,
         false,
     );
 }
@@ -131,13 +167,14 @@ fn persist_agent_snapshot(
     agent_session_id: Option<String>,
     prompt: PromptUpdate,
     cwd: Option<PathBuf>,
+    event: Option<StatusEvent>,
     preserve_existing: bool,
-) {
+) -> Option<ResolvedStatus> {
     let Ok(store) = StateStore::new() else {
-        return;
+        return None;
     };
-    if let Err(error) = store.with_agent_lock(|store| {
-        persist_agent_snapshot_locked(
+    match store.with_agent_lock(|store| {
+        Ok(persist_agent_snapshot_locked(
             store,
             mux,
             pane_id,
@@ -146,11 +183,15 @@ fn persist_agent_snapshot(
             agent_session_id,
             prompt,
             cwd,
+            event,
             preserve_existing,
-        );
-        Ok(())
+        ))
     }) {
-        warn!(%error, "failed to lock agent state persistence");
+        Ok(resolved) => resolved,
+        Err(error) => {
+            warn!(%error, "failed to lock agent state persistence");
+            None
+        }
     }
 }
 
@@ -164,8 +205,9 @@ fn persist_agent_snapshot_locked(
     agent_session_id: Option<String>,
     prompt: PromptUpdate,
     cwd: Option<PathBuf>,
+    event: Option<StatusEvent>,
     preserve_existing: bool,
-) {
+) -> Option<ResolvedStatus> {
     let pane_key = PaneKey {
         backend: mux.name().to_string(),
         instance: mux.instance_id(),
@@ -176,11 +218,11 @@ fn persist_agent_snapshot_locked(
         Ok(Some(info)) => info,
         Ok(None) => {
             warn!(%pane_id, "pane not found, skipping state persist");
-            return;
+            return None;
         }
         Err(e) => {
             warn!(error = %e, "failed to get live pane info, skipping state persist");
-            return;
+            return None;
         }
     };
 
@@ -192,17 +234,17 @@ fn persist_agent_snapshot_locked(
     let (live_pid, boot_id) = if mux.name() == "tmux" {
         let Some(live_pid) = live_info.pid else {
             warn!(%pane_id, "tmux pane PID unavailable, skipping state persist");
-            return;
+            return None;
         };
         let boot_id = match mux.server_boot_id() {
             Ok(Some(boot_id)) => Some(boot_id),
             Ok(None) => {
                 warn!(%pane_id, "tmux server identity unavailable, skipping state persist");
-                return;
+                return None;
             }
             Err(error) => {
                 warn!(%pane_id, %error, "failed to get tmux server identity, skipping state persist");
-                return;
+                return None;
             }
         };
         (live_pid, boot_id)
@@ -217,7 +259,7 @@ fn persist_agent_snapshot_locked(
         && let Err(error) = store.compact_context_locked(mux.name(), &mux.instance_id(), boot_id)
     {
         warn!(%error, "failed to compact historical agent state");
-        return;
+        return None;
     }
 
     // tmux pane PIDs and server lifecycles form a stable process identity.
@@ -237,6 +279,10 @@ fn persist_agent_snapshot_locked(
             })
         })
         .flatten();
+
+    // Apply the hook event, if any: its status replaces the explicit one.
+    let (status, turn_active, background) =
+        resolve_background(existing.as_ref(), status, event.as_ref(), now);
 
     // Resolve status: explicit update wins, otherwise preserve existing
     let final_status = status.or(existing.as_ref().and_then(|e| e.status));
@@ -313,13 +359,46 @@ fn persist_agent_snapshot_locked(
         agent_kind,
         agent_session_id,
         prompt,
-        turn_active: false,
-        background: Vec::new(),
+        turn_active,
+        background,
     };
 
     if let Err(error) = store.upsert_agent_locked(&state) {
         warn!(%error, "failed to persist agent state");
+        return None;
     }
+    state.status.map(|status| ResolvedStatus {
+        status,
+        background: state.in_background(now),
+    })
+}
+
+/// Background fields to store, and the status that results from the hook
+/// event. Without an event, `status` and the background fields of the same
+/// agent process are kept as they are. With one, the event is applied to
+/// those fields (empty for a new record) and decides the status.
+fn resolve_background(
+    existing: Option<&AgentState>,
+    status: Option<AgentStatus>,
+    event: Option<&StatusEvent>,
+    now: u64,
+) -> (Option<AgentStatus>, bool, Vec<BackgroundItem>) {
+    let mut turn_active = existing.is_some_and(|state| state.turn_active);
+    let mut items = existing
+        .map(|state| state.background.clone())
+        .unwrap_or_default();
+    let Some(event) = event else {
+        return (status, turn_active, items);
+    };
+    let status = background::transition(
+        &mut turn_active,
+        &mut items,
+        &event.event,
+        existing.and_then(|state| state.status),
+        event.transcript.as_deref(),
+        now,
+    );
+    (Some(status), turn_active, items)
 }
 
 /// `existing` is already limited to the same agent process, so a kept prompt
@@ -470,6 +549,59 @@ mod tests {
     fn prompt_is_not_inherited_without_matching_state() {
         // Registration and pane reuse pass no existing state.
         assert_eq!(resolve_prompt(PromptUpdate::Keep, None), None);
+    }
+
+    fn live_item(id: &str) -> BackgroundItem {
+        BackgroundItem {
+            id: id.into(),
+            kind: background::BackgroundKind::Subagent,
+            started_ts: 10,
+            expires_ts: 5000,
+            transcript_offset: None,
+        }
+    }
+
+    #[test]
+    fn no_event_keeps_status_and_background_fields() {
+        let mut existing = state_with_prompt("p");
+        existing.turn_active = false;
+        existing.background = vec![live_item("s1")];
+        assert_eq!(
+            resolve_background(Some(&existing), Some(AgentStatus::Done), None, 1000),
+            (Some(AgentStatus::Done), false, vec![live_item("s1")])
+        );
+    }
+
+    #[test]
+    fn event_overrides_status_from_transition() {
+        let mut existing = state_with_prompt("p");
+        existing.status = Some(AgentStatus::Working);
+        existing.turn_active = true;
+        existing.background = vec![live_item("s1")];
+        let event = StatusEvent {
+            event: background::HookEvent::Stop,
+            transcript: None,
+        };
+        assert_eq!(
+            resolve_background(Some(&existing), Some(AgentStatus::Done), Some(&event), 1000),
+            (Some(AgentStatus::Working), false, vec![live_item("s1")])
+        );
+    }
+
+    #[test]
+    fn event_without_same_process_record_starts_empty() {
+        let event = StatusEvent {
+            event: background::HookEvent::SubagentStart {
+                agent_id: "s1".into(),
+            },
+            transcript: None,
+        };
+        let (status, turn_active, items) =
+            resolve_background(None, Some(AgentStatus::Working), Some(&event), 1000);
+        assert_eq!(status, Some(AgentStatus::Working));
+        assert!(!turn_active);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "s1");
     }
 
     #[test]

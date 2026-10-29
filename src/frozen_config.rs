@@ -177,6 +177,7 @@ mod tests {
                 working: Some("work".to_string()),
                 waiting: Some("wait".to_string()),
                 done: Some("done".to_string()),
+                background: None,
             },
             ..Default::default()
         }

@@ -15,7 +15,7 @@ use crate::multiplexer::{
     create_backend_for_instance, detect_backend,
 };
 use crate::state::background::{BackgroundKind, HookEvent, Launch};
-use crate::state::{AgentState, PromptUpdate, StateStore};
+use crate::state::{AgentState, PromptUpdate, ResolvedStatus, StateStore, StatusEvent};
 
 #[derive(ValueEnum, Debug, Clone)]
 pub enum SetWindowStatusCommand {
@@ -100,6 +100,7 @@ pub fn run(cmd: SetWindowStatusCommand) -> Result<()> {
             hook.as_ref().and_then(HookInput::session_id),
             hook.as_ref().and_then(HookInput::prompt),
             hook.as_ref().and_then(HookInput::cwd),
+            hook.as_ref().and_then(HookInput::status_event),
         )
     })
 }
@@ -192,6 +193,7 @@ fn run_for_status_target(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_status_update(
     cmd: &SetWindowStatusCommand,
     config: &Config,
@@ -200,6 +202,7 @@ fn apply_status_update(
     agent_session_id: Option<&str>,
     prompt: Option<&str>,
     cwd: Option<PathBuf>,
+    event: Option<StatusEvent>,
 ) -> Result<()> {
     match cmd {
         SetWindowStatusCommand::Clear => {
@@ -216,11 +219,22 @@ fn apply_status_update(
                 SetWindowStatusCommand::Clear => unreachable!(),
             };
 
-            let (icon, auto_clear) = match status {
-                AgentStatus::Working => (config.status_icons.working(), false),
-                AgentStatus::Waiting => (config.status_icons.waiting(), true),
-                AgentStatus::Done => (config.status_icons.done(), true),
-            };
+            // Persist first: the hook event can change the status to show.
+            let resolved = crate::state::persist_agent_update(
+                mux,
+                pane_id,
+                Some(status),
+                None,
+                agent_session_id.map(str::to_string),
+                prompt_update(config, status, prompt),
+                cwd,
+                event,
+            )
+            .unwrap_or(ResolvedStatus {
+                status,
+                background: false,
+            });
+            let (icon, auto_clear) = status_icon(config, resolved);
 
             // Ensure the status format is applied so the icon actually shows up
             if config.status_format.unwrap_or(true) {
@@ -229,22 +243,22 @@ fn apply_status_update(
 
             // Update backend UI (status bar icon)
             mux.set_status(pane_id, icon, auto_clear)?;
-
-            // Persist to state store so the dashboard sees this agent
-            crate::state::persist_agent_update(
-                mux,
-                pane_id,
-                Some(status),
-                None,
-                agent_session_id.map(str::to_string),
-                prompt_update(config, status, prompt),
-                cwd,
-            );
         }
     }
 
     crate::command::sidebar::request_refresh_for(mux);
     Ok(())
+}
+
+/// Window icon for a stored status, and whether focusing the window clears
+/// it. The background icon stays: the work it stands for is still running.
+fn status_icon(config: &Config, resolved: ResolvedStatus) -> (&str, bool) {
+    match resolved.status {
+        AgentStatus::Working if resolved.background => (config.status_icons.background(), false),
+        AgentStatus::Working => (config.status_icons.working(), false),
+        AgentStatus::Waiting => (config.status_icons.waiting(), true),
+        AgentStatus::Done => (config.status_icons.done(), true),
+    }
 }
 
 #[derive(Debug, Default)]
@@ -339,8 +353,6 @@ where
     })
 }
 
-// Consumed by the status handlers in a later change.
-#[allow(dead_code)]
 /// Object form of a tool payload; Codex sends these as JSON strings.
 fn tool_object(value: Option<&serde_json::Value>) -> Option<serde_json::Value> {
     match value? {
@@ -349,7 +361,6 @@ fn tool_object(value: Option<&serde_json::Value>) -> Option<serde_json::Value> {
     }
 }
 
-#[allow(dead_code)]
 fn json_str<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
     value
         .get(key)
@@ -358,8 +369,6 @@ fn json_str<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
 }
 
 impl HookInput {
-    // Consumed by the status handlers in a later change.
-    #[allow(dead_code)]
     /// The hook event, or `None` for events status tracking ignores.
     fn event(&self) -> Option<HookEvent> {
         let agent_id = self.agent_id.clone().filter(|id| !id.is_empty());
@@ -385,8 +394,6 @@ impl HookInput {
         }
     }
 
-    // Consumed by the status handlers in a later change.
-    #[allow(dead_code)]
     /// Background work started by this tool call.
     fn launch(&self) -> Option<Launch> {
         let response = tool_object(self.tool_response.as_ref())?;
@@ -421,8 +428,6 @@ impl HookInput {
         }
     }
 
-    // Consumed by the status handlers in a later change.
-    #[allow(dead_code)]
     /// Task or shell the agent asked to stop.
     fn stopped_task(&self) -> Option<String> {
         if !matches!(self.tool_name.as_deref()?, "TaskStop" | "KillShell") {
@@ -432,6 +437,14 @@ impl HookInput {
         json_str(&input, "task_id")
             .or_else(|| json_str(&input, "shell_id"))
             .map(str::to_string)
+    }
+
+    /// The hook event with the transcript it may need to scan.
+    fn status_event(&self) -> Option<StatusEvent> {
+        Some(StatusEvent {
+            event: self.event()?,
+            transcript: self.transcript_path().map(Path::to_path_buf),
+        })
     }
 
     fn session_id(&self) -> Option<&str> {
@@ -1505,6 +1518,44 @@ mod tests {
                 launch: None,
                 stopped: Some("b2".into())
             })
+        );
+    }
+
+    #[test]
+    fn status_event_carries_transcript_and_falls_back_without_event() {
+        let hook =
+            parse_hook_input(r#"{"hook_event_name":"Stop","transcript_path":"/tmp/t.jsonl"}"#)
+                .unwrap();
+        assert_eq!(
+            hook.status_event(),
+            Some(StatusEvent {
+                event: HookEvent::Stop,
+                transcript: Some(PathBuf::from("/tmp/t.jsonl")),
+            })
+        );
+        let legacy = parse_hook_input(r#"{"session_id":"s"}"#).unwrap();
+        assert_eq!(legacy.status_event(), None);
+    }
+
+    #[test]
+    fn background_status_uses_its_icon_without_auto_clear() {
+        let config = Config::default();
+        let resolved = |status, background| ResolvedStatus { status, background };
+        assert_eq!(
+            status_icon(&config, resolved(AgentStatus::Working, true)),
+            ("⏳", false)
+        );
+        assert_eq!(
+            status_icon(&config, resolved(AgentStatus::Working, false)),
+            ("🤖", false)
+        );
+        assert_eq!(
+            status_icon(&config, resolved(AgentStatus::Done, false)),
+            ("✅", true)
+        );
+        assert_eq!(
+            status_icon(&config, resolved(AgentStatus::Waiting, false)),
+            ("💬", true)
         );
     }
 }

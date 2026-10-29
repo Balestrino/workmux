@@ -4,9 +4,6 @@
 //! a background shell, a monitor) while its own turn is idle. Items expire on
 //! a deadline so a missed completion hook cannot pin an agent forever.
 
-// The hook handlers that consume these arrive in later changes.
-#![allow(dead_code)]
-
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
