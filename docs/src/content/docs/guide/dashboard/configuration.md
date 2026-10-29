@@ -35,6 +35,7 @@ The `commit` and `merge` values are text sent to the agent's pane. Use the `!` p
 | `worktree_info_command`  | unset                                                              | Command printing per-worktree environment info as JSON (global config only)              |
 | `worktree_info_interval` | `15`                                                               | Seconds between runs of the info command, minimum `2` (global config only)               |
 | `agents_tab`             | `false`                                                            | Fork only: show the Agents tab (`true` restores the two-tab dashboard)                   |
+| `ignore_agent_dirs`      | `["~/.claude"]`                                                    | Fork only: directories whose reported `cwd` does not move an agent                       |
 | `close_on_jump`          | `true`                                                             | Close the dashboard after a jump                                                         |
 | `input_exit_key`         | `Esc`                                                              | Key to exit input mode (`Esc` or `Ctrl+<letter>`)                                        |
 
@@ -48,6 +49,17 @@ dashboard:
 ```
 
 With `true` the dashboard behaves as upstream: two tabs, no sub-rows, `agent` column per `worktree_columns`. Upstream workmux ignores this key, so the shared config file stays valid.
+
+## Ignored agent directories
+
+Fork only. Agents are placed by the current directory their hooks report. When an agent `cd`s into a directory listed here, workmux keeps its last other directory, so an agent that steps into `~/.claude` to write memory stays under the worktree it works on instead of moving to **Outside worktrees**. Entries match the directory and everything below it; `~` is expanded.
+
+```yaml
+dashboard:
+  ignore_agent_dirs: ["~/.claude", "~/notes"]
+```
+
+An empty list (`[]`) turns the behaviour off.
 
 ## Input mode exit key
 

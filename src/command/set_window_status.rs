@@ -99,7 +99,7 @@ pub fn run(cmd: SetWindowStatusCommand) -> Result<()> {
             pane_id,
             hook.as_ref().and_then(HookInput::session_id),
             hook.as_ref().and_then(HookInput::prompt),
-            hook.as_ref().and_then(HookInput::cwd),
+            reported_cwd(hook.as_ref(), &config.dashboard.ignore_agent_dirs()),
             hook.as_ref().and_then(HookInput::status_event),
         )
     })
@@ -124,6 +124,9 @@ pub fn register_agent() -> Result<()> {
         }),
         None => PromptUpdate::Clear,
     };
+    let ignored_dirs = Config::load(None)
+        .map(|config| config.dashboard.ignore_agent_dirs())
+        .unwrap_or_default();
     run_for_status_target(hook.as_ref(), |mux, pane_id| {
         let _ = mux.clear_status(pane_id);
         crate::state::persist_agent_registration(
@@ -133,11 +136,19 @@ pub fn register_agent() -> Result<()> {
                 .and_then(HookInput::session_id)
                 .map(str::to_string),
             prompt,
-            hook.as_ref().and_then(HookInput::cwd),
+            reported_cwd(hook.as_ref(), &ignored_dirs),
         );
         crate::command::sidebar::request_refresh_for(mux);
         Ok(())
     })
+}
+
+/// The hook's reported directory, unless it lies in an ignored directory
+/// (such as `~/.claude`, where agents go to write memory). `None` keeps the
+/// agent's last reported directory.
+fn reported_cwd(hook: Option<&HookInput>, ignored: &[PathBuf]) -> Option<PathBuf> {
+    hook.and_then(HookInput::cwd)
+        .filter(|cwd| !ignored.iter().any(|dir| cwd.starts_with(dir)))
 }
 
 fn status_tracking_disabled() -> bool {
@@ -935,6 +946,33 @@ mod tests {
         assert_eq!(empty.session_id(), None);
         assert_eq!(empty.transcript_path(), None);
         assert!(parse_hook_input("not json").is_none());
+    }
+
+    #[test]
+    fn reported_cwd_skips_ignored_directories() {
+        let ignored = [PathBuf::from("/home/u/.claude")];
+        let hook = |cwd: &str| {
+            parse_hook_input(&format!(r#"{{"session_id":"s","cwd":"{cwd}"}}"#)).unwrap()
+        };
+        assert_eq!(
+            reported_cwd(Some(&hook("/ws/repo/feat")), &ignored),
+            Some(PathBuf::from("/ws/repo/feat"))
+        );
+        assert_eq!(
+            reported_cwd(Some(&hook("/home/u/.claude/projects/x/memory")), &ignored),
+            None
+        );
+        assert_eq!(reported_cwd(Some(&hook("/home/u/.claude")), &ignored), None);
+        // Component-wise: a sibling with the same prefix is not ignored.
+        assert_eq!(
+            reported_cwd(Some(&hook("/home/u/.claude-notes")), &ignored),
+            Some(PathBuf::from("/home/u/.claude-notes"))
+        );
+        assert_eq!(reported_cwd(None, &ignored), None);
+        assert_eq!(
+            reported_cwd(Some(&hook("/home/u/.claude/x")), &[]),
+            Some(PathBuf::from("/home/u/.claude/x"))
+        );
     }
 
     #[test]

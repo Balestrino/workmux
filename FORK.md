@@ -51,7 +51,9 @@ Changes are not proposed upstream.
   column, Agents tab project/worktree, sidebar, `workmux status` `workdir`,
   worktree-targeted commands) follows that directory, so an agent started in
   `~` shows up on the worktree it `cd`s into. Resurrection still resumes in
-  the pane's `workdir`, where the agent session was started.
+  the pane's `workdir`, where the agent session was started. A `cwd` inside
+  `dashboard.ignore_agent_dirs` (default `~/.claude`, where agents write
+  memory) keeps the agent's last other directory.
 - **Background work status** (`status_icons.background`, default ⏳): an
   agent whose turn has ended while a background subagent, shell command or
   Monitor (Claude Code) or subagent (Codex) it launched is still running is
