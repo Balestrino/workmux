@@ -164,6 +164,10 @@ pub fn format_git_status(
     let icons = nerdfont::git_icons();
 
     if let Some(status) = status {
+        // Not a repository at all: nothing to report, and not "dirty".
+        if status.outside_repository {
+            return vec![("?".to_string(), Style::default().fg(palette.dimmed))];
+        }
         let mut spans: Vec<(String, Style)> = Vec::new();
         let has_uncommitted =
             status.uncommitted_added > 0 || status.uncommitted_removed > 0 || status.is_dirty;
@@ -266,6 +270,21 @@ pub fn format_git_status(
             ));
         }
 
+        // A branch with commits but no upstream has never been pushed, and has
+        // no ↑ to show: say so instead of looking in sync.
+        if !status.has_upstream
+            && status.branch.is_some()
+            && (status.lines_added > 0 || status.lines_removed > 0)
+        {
+            if !spans.is_empty() {
+                spans.push((" ".to_string(), Style::default()));
+            }
+            spans.push((
+                "no upstream".to_string(),
+                Style::default().fg(palette.warning),
+            ));
+        }
+
         if spans.is_empty() {
             vec![("-".to_string(), Style::default().fg(palette.dimmed))]
         } else {
@@ -351,6 +370,8 @@ pub(crate) struct ResourceHeaderState<'a> {
 pub(crate) enum ResourceHeaderCell {
     /// Plain label with no fetch state.
     Plain(&'static str),
+    /// Plain label built at runtime, such as a provider detail label.
+    Owned(String),
     /// `Git` label, spinning while git data is being fetched.
     Git,
     /// `PR` label, spinning while GitHub data is being fetched.
@@ -365,6 +386,7 @@ pub(crate) fn resource_table_header(
     let header_style = Style::default().fg(state.palette.header).bold();
     let header_cells = columns.iter().map(|column| match column {
         ResourceHeaderCell::Plain(label) => Cell::from(*label).style(header_style),
+        ResourceHeaderCell::Owned(label) => Cell::from(label.clone()).style(header_style),
         ResourceHeaderCell::Git => Cell::from(build_column_header(
             "Git",
             state.git_fetching,
@@ -442,6 +464,14 @@ pub fn calc_column_width(items: &[String], min: usize, max: usize, padding: usiz
         .saturating_add(padding) as u16
 }
 
+/// Upper bound for the `project` cell.
+///
+/// Narrow panes keep the historical cap of 20; wider panes leave room for
+/// longer names such as `group/repository` paths instead of cutting them off.
+pub fn project_width_budget(area_width: u16) -> usize {
+    (area_width as usize / 5).clamp(20, 40)
+}
+
 /// Color elapsed time by age without using the destructive-action color.
 pub(crate) fn elapsed_time_style(secs: Option<u64>, palette: &ThemePalette) -> Style {
     match secs {
@@ -502,6 +532,17 @@ mod tests {
     use crate::github::ClosingIssue;
 
     #[test]
+    fn project_width_budget_scales_with_the_pane() {
+        // Narrow panes keep the historical cap of 20.
+        assert_eq!(project_width_budget(80), 20);
+        assert_eq!(project_width_budget(100), 20);
+        // Wider panes fit longer names such as group/repository paths.
+        assert_eq!(project_width_budget(150), 30);
+        assert_eq!(project_width_budget(200), 40);
+        assert_eq!(project_width_budget(400), 40);
+    }
+
+    #[test]
     fn pr_issues_qualify_only_external_repositories() {
         let pr = PrSummary {
             number: 42,
@@ -525,6 +566,87 @@ mod tests {
 
         assert_eq!(format_pr_issues(Some(&pr)), "#308 acme/tracker#12");
         assert_eq!(format_pr_issues(None), "");
+    }
+
+    fn git_text(status: &GitStatus) -> String {
+        let palette = ThemePalette::for_scheme(ThemeScheme::Default, ThemeMode::Dark);
+        format_git_status(Some(status), 0, &palette)
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn git_status_marks_a_branch_with_commits_and_no_upstream() {
+        let palette = ThemePalette::for_scheme(ThemeScheme::Default, ThemeMode::Dark);
+        let status = GitStatus {
+            branch: Some("feat/x".into()),
+            lines_added: 5,
+            ..Default::default()
+        };
+        let spans = format_git_status(Some(&status), 0, &palette);
+        let marker = spans.iter().find(|(text, _)| text == "no upstream");
+        assert_eq!(
+            marker.map(|(_, style)| style.fg),
+            Some(Some(palette.warning)),
+            "{spans:?}"
+        );
+        assert_eq!(git_text(&status), "+5 no upstream");
+    }
+
+    #[test]
+    fn git_status_has_no_upstream_marker_without_commits_or_branch() {
+        let fresh = GitStatus {
+            branch: Some("feat/x".into()),
+            ..Default::default()
+        };
+        assert_eq!(git_text(&fresh), "-");
+        let detached = GitStatus {
+            branch: None,
+            lines_added: 5,
+            ..Default::default()
+        };
+        assert_eq!(git_text(&detached), "+5");
+    }
+
+    #[test]
+    fn git_status_with_upstream_shows_unpushed_commits() {
+        let status = GitStatus {
+            branch: Some("feat/x".into()),
+            has_upstream: true,
+            lines_added: 5,
+            ahead: 2,
+            ..Default::default()
+        };
+        assert_eq!(git_text(&status), "+5 \u{2191}2");
+    }
+
+    #[test]
+    fn git_status_flags_uncommitted_changes_with_a_warning_sign() {
+        let status = GitStatus {
+            branch: Some("feat/x".into()),
+            has_upstream: true,
+            is_dirty: true,
+            lines_added: 3,
+            uncommitted_added: 3,
+            ..Default::default()
+        };
+        assert_eq!(git_text(&status), "\u{26a0}\u{fe0f} +3");
+    }
+
+    #[test]
+    fn git_status_outside_a_repository_is_a_dimmed_question_mark() {
+        let palette = ThemePalette::for_scheme(ThemeScheme::Default, ThemeMode::Dark);
+        let status = GitStatus {
+            outside_repository: true,
+            is_dirty: true,
+            ..Default::default()
+        };
+        let spans = format_git_status(Some(&status), 0, &palette);
+        assert_eq!(
+            spans,
+            vec![("?".to_string(), Style::default().fg(palette.dimmed))]
+        );
     }
 
     #[test]

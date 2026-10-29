@@ -32,6 +32,7 @@ mod tmux_style;
 mod ui;
 mod util;
 mod workflow;
+mod workspaces;
 mod xdg;
 
 use anyhow::Result;

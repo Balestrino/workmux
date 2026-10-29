@@ -170,6 +170,11 @@ fn classify_by_command(raw: &str, stem: &str) -> Option<AgentKind> {
         return Some(AgentKind::Codex);
     }
 
+    // Mistral Vibe ships a `vibe-rs` binary next to `vibe`.
+    if stem == "vibe" || stem.starts_with("vibe-") {
+        return Some(AgentKind::Vibe);
+    }
+
     AgentKind::from_str(stem)
 }
 
@@ -255,6 +260,7 @@ mod tests {
     #[test]
     fn codex_truncated_binary_matches() {
         assert_eq!(classify("codex-aarch64-a", ""), Some("codex".into()));
+        assert_eq!(classify("vibe-rs", ""), Some("vibe".into()));
         assert_eq!(classify("codex", ""), Some("codex".into()));
     }
 

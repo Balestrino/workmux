@@ -71,7 +71,7 @@ const NERDFONT_GIT_ICONS: GitIcons = GitIcons {
 };
 
 const FALLBACK_GIT_ICONS: GitIcons = GitIcons {
-    diff: "*",
+    diff: "\u{26a0}\u{fe0f}", // ⚠️ uncommitted changes
     conflict: "!",
     rebase: "R",
 };

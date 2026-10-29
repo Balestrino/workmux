@@ -302,10 +302,9 @@ fn row_id(app: &App, index: usize) -> Option<MouseRowId> {
             .agents
             .get(index)
             .map(|agent| MouseRowId::Agent(agent.pane_id.clone())),
-        DashboardTab::Worktrees => app
-            .worktrees
-            .get(index)
-            .map(|worktree| MouseRowId::Worktree(worktree.path.clone())),
+        // Orphan rows get an id too (they can be selected); the actions they
+        // would trigger are no-ops.
+        DashboardTab::Worktrees => app.row_path(index).map(MouseRowId::Worktree),
     }
 }
 
@@ -355,7 +354,7 @@ fn scroll_target(app: &mut App, target: MouseTarget, down: bool) -> bool {
                 DashboardTab::Worktrees => {
                     if let Some(index) = scrolled_index(
                         app.worktree_table_state.selected(),
-                        app.worktrees.len(),
+                        app.worktree_row_count(),
                         down,
                     ) {
                         app.select_worktree(index);
@@ -412,7 +411,7 @@ fn dashboard_target_at(app: &App, column: u16, row: u16) -> MouseTarget {
     };
     let count = match app.active_tab {
         DashboardTab::Agents => app.agents.len(),
-        DashboardTab::Worktrees => app.worktrees.len(),
+        DashboardTab::Worktrees => app.worktree_row_count(),
     };
     dashboard_surface_target(
         area,

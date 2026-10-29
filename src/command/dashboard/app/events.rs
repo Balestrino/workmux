@@ -47,10 +47,12 @@ impl App {
                     self.apply_worktree_filters();
                 }
             }
-            AppEvent::WorktreeList(mut worktrees) => {
+            AppEvent::WorktreeList(mut worktrees, names) => {
+                self.project_names = names;
                 self.removals.filter_snapshot(&mut worktrees);
                 let needs_pr_fetch = self.all_worktrees.is_empty() && !worktrees.is_empty();
                 self.all_worktrees = worktrees;
+                self.reindex_worktree_info();
                 self.apply_worktree_filters();
 
                 // Force a PR re-fetch on initial load or after project switch
@@ -58,6 +60,25 @@ impl App {
                 if needs_pr_fetch {
                     self.last_pr_fetch = std::time::Instant::now() - super::PR_FETCH_INTERVAL;
                 }
+            }
+            AppEvent::WorktreeInfo(result) => {
+                match result {
+                    Ok(report) => {
+                        self.worktree_info = Some(report);
+                        self.worktree_info_error = None;
+                    }
+                    // Keep the last good report on failure.
+                    Err(e) => self.worktree_info_error = Some(e),
+                }
+                self.reindex_worktree_info();
+                // Orphan rows may have appeared or vanished: re-resolve the
+                // selection by path so it stays on the same row.
+                if !self.all_worktrees.is_empty() {
+                    self.apply_worktree_filters();
+                }
+            }
+            AppEvent::ProjectNames(names) => {
+                self.project_names = names;
             }
             AppEvent::WorktreeLog(path, log) => {
                 if self.worktree_preview_path.as_ref() == Some(&path) {

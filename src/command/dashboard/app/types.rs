@@ -9,6 +9,7 @@ use crate::github::{BranchSummary, PrListEntry};
 use crate::workflow::types::WorktreeInfo;
 
 use super::super::diff::DiffView;
+use super::super::worktree_info::InfoReport;
 
 /// Unified event type for the dashboard event loop.
 /// All background threads and the input thread send events through a single channel.
@@ -20,7 +21,11 @@ pub enum AppEvent {
     /// GitHub status update for a repo root
     GithubStatus(PathBuf, HashMap<String, BranchSummary>),
     /// Full worktree list from background fetch
-    WorktreeList(Vec<WorktreeInfo>),
+    WorktreeList(Vec<WorktreeInfo>, HashMap<PathBuf, String>),
+    /// Project names for all known repositories (repo_key -> project).
+    ProjectNames(HashMap<PathBuf, String>),
+    /// Result of an external worktree info provider run.
+    WorktreeInfo(Result<InfoReport, String>),
     /// Git log preview for a worktree path
     WorktreeLog(PathBuf, String),
     /// Result of a confirmed background removal.
@@ -121,6 +126,8 @@ pub struct SweepProgress {
 pub struct ProjectEntry {
     pub name: String,
     pub path: PathBuf,
+    /// Repository key; `None` is the "All projects" entry.
+    pub repo_key: Option<PathBuf>,
 }
 
 /// State for the project picker modal.

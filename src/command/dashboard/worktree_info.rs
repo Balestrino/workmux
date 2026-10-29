@@ -1,0 +1,423 @@
+//! External worktree info provider: a user-configured shell command prints
+//! JSON describing per-worktree environments; this module parses, runs and
+//! indexes that report.
+
+use std::collections::HashMap;
+use std::io::Read;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, anyhow, bail};
+use serde::{Deserialize, Deserializer};
+
+/// Maximum time a provider run may take before the child is killed.
+pub const PROVIDER_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Extra time to wait for the output pipe to close after the child exited,
+/// even when the timeout is (almost) used up.
+const OUTPUT_GRACE: Duration = Duration::from_millis(500);
+
+const SCHEMA_VERSION: u32 = 1;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tone {
+    Success,
+    Warning,
+    Error,
+    Info,
+    #[default]
+    Muted,
+}
+
+impl<'de> Deserialize<'de> for Tone {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(match s.as_str() {
+            "success" => Tone::Success,
+            "warning" => Tone::Warning,
+            "error" => Tone::Error,
+            "info" => Tone::Info,
+            _ => Tone::Muted,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct InfoStatus {
+    pub label: String,
+    /// A missing tone is `muted`, like an unknown one.
+    #[serde(default)]
+    pub tone: Tone,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct InfoDetail {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct InfoEntry {
+    pub path: PathBuf,
+    pub status: InfoStatus,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub details: Vec<InfoDetail>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct OrphanEntry {
+    pub project: String,
+    pub name: String,
+    pub path: PathBuf,
+    pub status: InfoStatus,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub details: Vec<InfoDetail>,
+    #[serde(default)]
+    pub hint: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InfoReport {
+    pub worktrees: Vec<InfoEntry>,
+    pub orphans: Vec<OrphanEntry>,
+}
+
+#[derive(Deserialize)]
+struct RawReport {
+    #[serde(rename = "schemaVersion")]
+    schema_version: u32,
+    #[serde(default)]
+    worktrees: Vec<InfoEntry>,
+    #[serde(default)]
+    orphans: Vec<OrphanEntry>,
+}
+
+pub fn parse_report(json: &str) -> Result<InfoReport> {
+    let raw: RawReport = serde_json::from_str(json).context("invalid worktree info JSON")?;
+    if raw.schema_version != SCHEMA_VERSION {
+        bail!(
+            "unsupported worktree info schemaVersion {} (expected {})",
+            raw.schema_version,
+            SCHEMA_VERSION
+        );
+    }
+    Ok(InfoReport {
+        worktrees: raw.worktrees,
+        orphans: raw.orphans,
+    })
+}
+
+/// Run the provider via `sh -c`, reading stdout only (stderr is discarded).
+///
+/// Stdout is drained by a dedicated thread while the caller polls the child,
+/// so a provider that writes more than a pipe buffer cannot deadlock. The
+/// child runs in its own process group so a timeout kills grandchildren too,
+/// and the reader is never joined after a timeout (a stray process holding
+/// the pipe cannot block us).
+pub fn run_provider(command: &str, timeout: Duration) -> Result<InfoReport> {
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .context("failed to start worktree info command")?;
+    let mut stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
+    let (tx, rx) = mpsc::channel::<std::io::Result<Vec<u8>>>();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = tx.send(stdout.read_to_end(&mut buf).map(|_| buf));
+    });
+
+    let deadline = Instant::now() + timeout;
+    let kill_group = |child: &mut std::process::Child| {
+        // SAFETY: plain syscall on the process group we created.
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    };
+    let status = loop {
+        match child.try_wait().context("failed to wait for command")? {
+            Some(status) => break status,
+            None if Instant::now() >= deadline => {
+                kill_group(&mut child);
+                bail!("worktree info command timed out after {timeout:?}");
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    if !status.success() {
+        // Background processes left by the command must not outlive it.
+        kill_group(&mut child);
+        bail!("worktree info command failed ({status})");
+    }
+    let remaining = deadline
+        .saturating_duration_since(Instant::now())
+        .max(OUTPUT_GRACE);
+    let bytes = match rx.recv_timeout(remaining) {
+        Ok(res) => res.context("failed to read command output")?,
+        Err(_) => {
+            kill_group(&mut child);
+            bail!("worktree info command output not closed after {timeout:?}");
+        }
+    };
+    let text = String::from_utf8(bytes).context("command output is not UTF-8")?;
+    parse_report(&text)
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct InfoIndex {
+    pub by_path: HashMap<PathBuf, InfoEntry>,
+    pub orphans: Vec<OrphanEntry>,
+}
+
+fn canon(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// Index a report for lookup by `WorktreeInfo.path`. Matching compares
+/// canonical forms, but an entry that matches an element of `known_paths` is
+/// keyed by that element exactly as passed, so render code can use
+/// `by_path.get(&wt.path)` without canonicalizing. The first entry for a path
+/// wins. An orphan matching a known worktree is attached to it (under the
+/// known path) instead of staying an orphan. Entries matching no known path
+/// are keyed by their canonical path.
+pub fn index_report(report: &InfoReport, known_paths: &[PathBuf]) -> InfoIndex {
+    let mut known: HashMap<PathBuf, &PathBuf> = HashMap::new();
+    for p in known_paths {
+        known.entry(canon(p)).or_insert(p);
+    }
+    let key_for = |path: &Path| -> (PathBuf, bool) {
+        let c = canon(path);
+        match known.get(&c) {
+            Some(k) => ((*k).clone(), true),
+            None => (c, false),
+        }
+    };
+    let mut index = InfoIndex::default();
+    for entry in &report.worktrees {
+        index
+            .by_path
+            .entry(key_for(&entry.path).0)
+            .or_insert_with(|| entry.clone());
+    }
+    for orphan in &report.orphans {
+        let (key, matched) = key_for(&orphan.path);
+        if matched {
+            index.by_path.entry(key).or_insert_with(|| InfoEntry {
+                path: orphan.path.clone(),
+                status: orphan.status.clone(),
+                id: orphan.id.clone(),
+                details: orphan.details.clone(),
+            });
+        } else {
+            index.orphans.push(orphan.clone());
+        }
+    }
+    index
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FULL: &str = r#"{
+  "schemaVersion": 1,
+  "worktrees": [
+    {
+      "path": "/home/user/projects/app/feature-x",
+      "status": { "label": "ready", "tone": "success" },
+      "id": "11111111-aaaa-bbbb-cccc-222222222222",
+      "details": [
+        { "label": "backend", "value": "http://127.0.0.1:8080" },
+        { "label": "console", "value": "http://dev-host.example:8081" }
+      ]
+    }
+  ],
+  "orphans": [
+    {
+      "project": "app",
+      "name": "gone",
+      "path": "/home/user/projects/app/gone",
+      "status": { "label": "unknown", "tone": "warning" },
+      "id": "54d5a60a-0000-1111-2222-333333333333",
+      "details": [],
+      "hint": "my-env-tool forget 54d5a60a"
+    }
+  ]
+}"#;
+
+    fn status(label: &str) -> InfoStatus {
+        InfoStatus {
+            label: label.into(),
+            tone: Tone::Info,
+        }
+    }
+
+    fn entry(path: &Path, label: &str) -> InfoEntry {
+        InfoEntry {
+            path: path.to_path_buf(),
+            status: status(label),
+            id: None,
+            details: vec![],
+        }
+    }
+
+    fn orphan(path: &Path) -> OrphanEntry {
+        OrphanEntry {
+            project: "p".into(),
+            name: "n".into(),
+            path: path.to_path_buf(),
+            status: status("gone"),
+            id: Some("x".into()),
+            details: vec![],
+            hint: None,
+        }
+    }
+
+    #[test]
+    fn parse_full_report() {
+        let r = parse_report(FULL).unwrap();
+        assert_eq!(r.worktrees.len(), 1);
+        assert_eq!(r.worktrees[0].details.len(), 2);
+        assert_eq!(r.worktrees[0].status.tone, Tone::Success);
+        assert_eq!(r.orphans.len(), 1);
+        assert_eq!(
+            r.orphans[0].hint.as_deref(),
+            Some("my-env-tool forget 54d5a60a")
+        );
+    }
+
+    #[test]
+    fn parse_rejects_other_schema() {
+        assert!(parse_report(r#"{"schemaVersion":2,"worktrees":[],"orphans":[]}"#).is_err());
+    }
+
+    #[test]
+    fn parse_unknown_tone_is_muted() {
+        let r = parse_report(
+            r#"{"schemaVersion":1,"worktrees":[{"path":"/a","status":{"label":"x","tone":"purple"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.worktrees[0].status.tone, Tone::Muted);
+    }
+
+    #[test]
+    fn parse_missing_tone_is_muted() {
+        let r = parse_report(
+            r#"{"schemaVersion":1,"worktrees":[{"path":"/a","status":{"label":"x"}},{"path":"/b","status":{"label":"y","tone":"error"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.worktrees.len(), 2);
+        assert_eq!(r.worktrees[0].status.tone, Tone::Muted);
+        assert_eq!(r.worktrees[1].status.tone, Tone::Error);
+    }
+
+    #[test]
+    fn parse_ignores_unknown_fields() {
+        let r = parse_report(
+            r#"{"schemaVersion":1,"extra":1,"worktrees":[{"path":"/a","zzz":true,"status":{"label":"x","tone":"info","more":1}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.worktrees.len(), 1);
+    }
+
+    #[test]
+    fn index_first_entry_wins() {
+        let report = InfoReport {
+            worktrees: vec![
+                entry(Path::new("/nope/a"), "first"),
+                entry(Path::new("/nope/a"), "second"),
+            ],
+            orphans: vec![],
+        };
+        let idx = index_report(&report, &[]);
+        assert_eq!(idx.by_path[Path::new("/nope/a")].status.label, "first");
+    }
+
+    #[test]
+    fn index_attaches_orphan_matching_known_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = InfoReport {
+            worktrees: vec![],
+            orphans: vec![orphan(dir.path()), orphan(Path::new("/nope/missing"))],
+        };
+        let idx = index_report(&report, &[dir.path().to_path_buf()]);
+        assert!(idx.by_path.contains_key(dir.path()));
+        assert_eq!(idx.orphans.len(), 1);
+        assert_eq!(idx.orphans[0].path, Path::new("/nope/missing"));
+    }
+
+    #[test]
+    fn index_canonicalizes_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let report = InfoReport {
+            worktrees: vec![entry(&link, "ok")],
+            orphans: vec![],
+        };
+        let idx = index_report(&report, std::slice::from_ref(&real));
+        assert_eq!(idx.by_path[&real].status.label, "ok");
+    }
+
+    #[test]
+    fn run_provider_timeout() {
+        let start = Instant::now();
+        let res = run_provider("sleep 5", Duration::from_millis(200));
+        assert!(res.is_err());
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn run_provider_nonzero_exit() {
+        assert!(run_provider("echo '{}'; exit 3", Duration::from_secs(2)).is_err());
+    }
+
+    #[test]
+    fn run_provider_nonzero_exit_kills_background_children() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("survived");
+        let cmd = format!("(sleep 1; touch '{}') & exit 3", marker.display());
+        assert!(run_provider(&cmd, Duration::from_secs(5)).is_err());
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!marker.exists(), "background child outlived a failed run");
+    }
+
+    #[test]
+    fn run_provider_waits_a_grace_period_for_output() {
+        // The command exits at once, but a background child keeps stdout
+        // open past the timeout; the grace period still collects the output.
+        let cmd = r#"printf '{"schemaVersion":1}'; sleep 0.4 &"#;
+        let r = run_provider(cmd, Duration::from_millis(150));
+        assert!(r.is_ok(), "{r:?}");
+    }
+
+    #[test]
+    fn run_provider_ok() {
+        let cmd = format!("printf '%s' '{}'", FULL.replace('\'', ""));
+        let r = run_provider(&cmd, Duration::from_secs(2)).unwrap();
+        assert_eq!(r.worktrees.len(), 1);
+    }
+
+    #[test]
+    fn run_provider_large_output_does_not_deadlock() {
+        // ~1 MiB of padding inside valid JSON, well past the pipe buffer.
+        let cmd = r#"printf '{"schemaVersion":1,"pad":"'; head -c 1048576 /dev/zero | tr '\0' x; printf '"}'"#;
+        let r = run_provider(cmd, Duration::from_secs(5)).unwrap();
+        assert!(r.worktrees.is_empty());
+    }
+}
