@@ -146,6 +146,11 @@ pub fn config_has_pua(config: &crate::config::Config) -> bool {
     {
         return true;
     }
+    if let Some(ref background) = config.status_icons.background
+        && contains_pua(background)
+    {
+        return true;
+    }
 
     // Check window_prefix
     if let Some(ref prefix) = config.window_prefix

@@ -35,18 +35,24 @@ pub enum AgentStatusFormat {
 }
 
 struct AgentStatusCounts {
+    /// Working agents with an active turn (background agents excluded).
     working: usize,
+    background: usize,
     waiting: usize,
     done: usize,
 }
 
 fn count_agent_statuses(summary: &AgentStatusSummary) -> AgentStatusCounts {
+    let working = summary
+        .statuses
+        .iter()
+        .filter(|s| **s == AgentStatus::Working)
+        .count();
+    // Background agents are stored as Working; split them out.
+    let background = summary.background.min(working);
     AgentStatusCounts {
-        working: summary
-            .statuses
-            .iter()
-            .filter(|s| **s == AgentStatus::Working)
-            .count(),
+        working: working - background,
+        background,
         waiting: summary
             .statuses
             .iter()
@@ -93,6 +99,19 @@ pub fn format_agent_status_summary(
             AgentStatusFormat::DetailLine => {
                 parts.push((format!(" {}", spinner), base_style));
             }
+        }
+        has_prior = true;
+    }
+    if counts.background > 0 {
+        if matches!(mode, AgentStatusFormat::DetailLine) && has_prior {
+            parts.push((" ".to_string(), separator_style));
+        }
+        // No spinner: the spinner means an active turn.
+        let icon = icons.background();
+        let base_style = Style::default().fg(palette.info);
+        parts.extend(ansi::parse_tmux_styles(icon, base_style));
+        if matches!(mode, AgentStatusFormat::TableCell) {
+            parts.push((" ".to_string(), base_style));
         }
         has_prior = true;
     }
@@ -530,6 +549,58 @@ mod tests {
     use super::*;
     use crate::config::{ThemeMode, ThemeScheme};
     use crate::github::ClosingIssue;
+
+    #[test]
+    fn summary_shows_background_icon_without_spinner() {
+        let palette = ThemePalette::for_scheme(ThemeScheme::Default, ThemeMode::Dark);
+        let icons = StatusIcons::default();
+        let summary = AgentStatusSummary {
+            statuses: vec![AgentStatus::Working, AgentStatus::Working],
+            background: 1,
+        };
+        for mode in [AgentStatusFormat::TableCell, AgentStatusFormat::DetailLine] {
+            let spans = format_agent_status_summary(Some(&summary), &icons, 0, &palette, mode);
+            let count = |needle: &str| spans.iter().filter(|(t, _)| t == needle).count();
+            assert_eq!(count(icons.working()), 1, "{spans:?}");
+            assert_eq!(count(icons.background()), 1, "{spans:?}");
+            let spinners = spans
+                .iter()
+                .filter(|(t, _)| SPINNER_FRAMES.iter().any(|f| t.contains(*f)))
+                .count();
+            assert_eq!(spinners, 1, "only the working agent spins: {spans:?}");
+            let bg = spans
+                .iter()
+                .position(|(t, _)| t == icons.background())
+                .unwrap();
+            assert_eq!(spans[bg].1.fg, Some(palette.info));
+            assert!(
+                spans
+                    .iter()
+                    .position(|(t, _)| t == icons.working())
+                    .unwrap()
+                    < bg
+            );
+        }
+    }
+
+    #[test]
+    fn summary_with_only_background_agents_has_no_working_icon() {
+        let palette = ThemePalette::for_scheme(ThemeScheme::Default, ThemeMode::Dark);
+        let icons = StatusIcons::default();
+        let summary = AgentStatusSummary {
+            statuses: vec![AgentStatus::Working, AgentStatus::Waiting],
+            background: 1,
+        };
+        let spans = format_agent_status_summary(
+            Some(&summary),
+            &icons,
+            0,
+            &palette,
+            AgentStatusFormat::DetailLine,
+        );
+        let text: String = spans.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(text, format!("{} {}", icons.background(), icons.waiting()));
+    }
 
     #[test]
     fn project_width_budget_scales_with_the_pane() {

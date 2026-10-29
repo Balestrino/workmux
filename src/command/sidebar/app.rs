@@ -837,10 +837,10 @@ impl SidebarApp {
 
         if !self.has_loaded_snapshot
             || (self.status_icons.working.is_none()
-                && self
-                    .agents
-                    .iter()
-                    .any(|agent| agent.status == Some(crate::multiplexer::AgentStatus::Working)))
+                && self.agents.iter().any(|agent| {
+                    agent.status == Some(crate::multiplexer::AgentStatus::Working)
+                        && !agent.background
+                }))
             || self
                 .check_statuses
                 .values()
@@ -2333,6 +2333,7 @@ mod tests {
             agent_command: None,
             agent_kind: None,
             prompt: None,
+            background: false,
         }
     }
 
@@ -2554,6 +2555,7 @@ mod grouping_tests {
             agent_command: None,
             agent_kind: None,
             prompt: None,
+            background: false,
         }
     }
 
@@ -3317,6 +3319,7 @@ mod filter_tests {
                 agent_command: None,
                 agent_kind: None,
                 prompt: None,
+                background: false,
             },
             AgentPane {
                 session: "s".to_string(),
@@ -3334,6 +3337,7 @@ mod filter_tests {
                 agent_command: None,
                 agent_kind: None,
                 prompt: None,
+                background: false,
             },
         ];
         let active_panes = std::collections::HashSet::from(["%2".to_string()]);

@@ -14,7 +14,8 @@ use crate::multiplexer::{
     STATUS_TARGET_INSTANCE_ENV, STATUS_TARGET_PANE_ENV, create_backend,
     create_backend_for_instance, detect_backend,
 };
-use crate::state::{AgentState, PromptUpdate, StateStore};
+use crate::state::background::{BackgroundKind, HookEvent, Launch};
+use crate::state::{AgentState, PromptUpdate, ResolvedStatus, StateStore, StatusEvent};
 
 #[derive(ValueEnum, Debug, Clone)]
 pub enum SetWindowStatusCommand {
@@ -99,6 +100,7 @@ pub fn run(cmd: SetWindowStatusCommand) -> Result<()> {
             hook.as_ref().and_then(HookInput::session_id),
             hook.as_ref().and_then(HookInput::prompt),
             hook.as_ref().and_then(HookInput::cwd),
+            hook.as_ref().and_then(HookInput::status_event),
         )
     })
 }
@@ -191,6 +193,7 @@ fn run_for_status_target(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_status_update(
     cmd: &SetWindowStatusCommand,
     config: &Config,
@@ -199,6 +202,7 @@ fn apply_status_update(
     agent_session_id: Option<&str>,
     prompt: Option<&str>,
     cwd: Option<PathBuf>,
+    event: Option<StatusEvent>,
 ) -> Result<()> {
     match cmd {
         SetWindowStatusCommand::Clear => {
@@ -215,11 +219,22 @@ fn apply_status_update(
                 SetWindowStatusCommand::Clear => unreachable!(),
             };
 
-            let (icon, auto_clear) = match status {
-                AgentStatus::Working => (config.status_icons.working(), false),
-                AgentStatus::Waiting => (config.status_icons.waiting(), true),
-                AgentStatus::Done => (config.status_icons.done(), true),
-            };
+            // Persist first: the hook event can change the status to show.
+            let resolved = crate::state::persist_agent_update(
+                mux,
+                pane_id,
+                Some(status),
+                None,
+                agent_session_id.map(str::to_string),
+                prompt_update(config, status, prompt),
+                cwd,
+                event,
+            )
+            .unwrap_or(ResolvedStatus {
+                status,
+                background: false,
+            });
+            let (icon, auto_clear) = status_icon(config, resolved);
 
             // Ensure the status format is applied so the icon actually shows up
             if config.status_format.unwrap_or(true) {
@@ -228,22 +243,22 @@ fn apply_status_update(
 
             // Update backend UI (status bar icon)
             mux.set_status(pane_id, icon, auto_clear)?;
-
-            // Persist to state store so the dashboard sees this agent
-            crate::state::persist_agent_update(
-                mux,
-                pane_id,
-                Some(status),
-                None,
-                agent_session_id.map(str::to_string),
-                prompt_update(config, status, prompt),
-                cwd,
-            );
         }
     }
 
     crate::command::sidebar::request_refresh_for(mux);
     Ok(())
+}
+
+/// Window icon for a stored status, and whether focusing the window clears
+/// it. The background icon stays: the work it stands for is still running.
+fn status_icon(config: &Config, resolved: ResolvedStatus) -> (&str, bool) {
+    match resolved.status {
+        AgentStatus::Working if resolved.background => (config.status_icons.background(), false),
+        AgentStatus::Working => (config.status_icons.working(), false),
+        AgentStatus::Waiting => (config.status_icons.waiting(), true),
+        AgentStatus::Done => (config.status_icons.done(), true),
+    }
 }
 
 #[derive(Debug, Default)]
@@ -318,6 +333,14 @@ struct HookInput {
     /// Agent's current directory (Claude, Codex). Follows the agent's `cd`.
     #[serde(default, deserialize_with = "lenient_string")]
     cwd: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    hook_event_name: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    tool_name: Option<String>,
+    #[serde(default)]
+    tool_input: Option<serde_json::Value>,
+    #[serde(default)]
+    tool_response: Option<serde_json::Value>,
 }
 
 fn lenient_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -330,7 +353,100 @@ where
     })
 }
 
+/// Object form of a tool payload; Codex sends these as JSON strings.
+fn tool_object(value: Option<&serde_json::Value>) -> Option<serde_json::Value> {
+    match value? {
+        serde_json::Value::String(text) => serde_json::from_str(text).ok(),
+        other => Some(other.clone()),
+    }
+}
+
+fn json_str<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|text| !text.is_empty())
+}
+
 impl HookInput {
+    /// The hook event, or `None` for events status tracking ignores.
+    fn event(&self) -> Option<HookEvent> {
+        let agent_id = self.agent_id.clone().filter(|id| !id.is_empty());
+        match self.hook_event_name.as_deref()? {
+            "SessionStart" => Some(HookEvent::SessionStart),
+            "UserPromptSubmit" => Some(HookEvent::PromptSubmit {
+                prompt: self.prompt.clone(),
+            }),
+            "PostToolUse" => Some(HookEvent::ToolUse {
+                launch: if agent_id.is_none() {
+                    self.launch()
+                } else {
+                    None
+                },
+                stopped: self.stopped_task(),
+                agent_id,
+            }),
+            "SubagentStart" => agent_id.map(|agent_id| HookEvent::SubagentStart { agent_id }),
+            "SubagentStop" => agent_id.map(|agent_id| HookEvent::SubagentStop { agent_id }),
+            "Notification" | "PermissionRequest" => Some(HookEvent::Waiting),
+            "Stop" => Some(HookEvent::Stop),
+            _ => None,
+        }
+    }
+
+    /// Background work started by this tool call.
+    fn launch(&self) -> Option<Launch> {
+        let response = tool_object(self.tool_response.as_ref())?;
+        let launch = |id: &str, kind| Launch {
+            id: id.to_string(),
+            kind,
+            timeout_secs: None,
+            persistent: false,
+        };
+        match self.tool_name.as_deref()? {
+            "Bash" => {
+                json_str(&response, "backgroundTaskId").map(|id| launch(id, BackgroundKind::Shell))
+            }
+            "Agent" | "Task" => {
+                if json_str(&response, "status") != Some("async_launched") {
+                    return None;
+                }
+                json_str(&response, "agentId").map(|id| launch(id, BackgroundKind::Subagent))
+            }
+            "Monitor" => json_str(&response, "taskId").map(|id| Launch {
+                timeout_secs: response
+                    .get("timeoutMs")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|ms| ms / 1000),
+                persistent: response
+                    .get("persistent")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+                ..launch(id, BackgroundKind::Monitor)
+            }),
+            _ => None,
+        }
+    }
+
+    /// Task or shell the agent asked to stop.
+    fn stopped_task(&self) -> Option<String> {
+        if !matches!(self.tool_name.as_deref()?, "TaskStop" | "KillShell") {
+            return None;
+        }
+        let input = tool_object(self.tool_input.as_ref())?;
+        json_str(&input, "task_id")
+            .or_else(|| json_str(&input, "shell_id"))
+            .map(str::to_string)
+    }
+
+    /// The hook event with the transcript it may need to scan.
+    fn status_event(&self) -> Option<StatusEvent> {
+        Some(StatusEvent {
+            event: self.event()?,
+            transcript: self.transcript_path().map(Path::to_path_buf),
+        })
+    }
+
     fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref().filter(|value| !value.is_empty())
     }
@@ -747,6 +863,8 @@ mod tests {
             agent_kind: Some("claude".to_string()),
             agent_session_id: Some(agent_session_id.to_string()),
             prompt: None,
+            turn_active: false,
+            background: Vec::new(),
         }
     }
 
@@ -1169,6 +1287,10 @@ mod tests {
             subagent_type: None,
             initial_prompt: None,
             cwd: None,
+            hook_event_name: None,
+            tool_name: None,
+            tool_input: None,
+            tool_response: None,
         };
 
         assert!(continuation_owns_ancestry_pane(
@@ -1194,6 +1316,10 @@ mod tests {
             subagent_type: None,
             initial_prompt: None,
             cwd: None,
+            hook_event_name: None,
+            tool_name: None,
+            tool_input: None,
+            tool_response: None,
         };
         assert!(!continuation_owns_ancestry_pane(
             &agents,
@@ -1237,6 +1363,199 @@ mod tests {
         assert_eq!(
             status_backend_candidates_for(BackendType::Tmux, &no_backend_signals()),
             vec![BackendType::Tmux, BackendType::Zellij]
+        );
+    }
+
+    fn event_of(json: &str) -> Option<HookEvent> {
+        parse_hook_input(json).unwrap().event()
+    }
+
+    #[test]
+    fn event_detects_claude_background_launches() {
+        let bash = r#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"sleep 25","run_in_background":true},"tool_response":{"stdout":"","interrupted":false,"backgroundTaskId":"b2djt8l8t"}}"#;
+        assert_eq!(
+            event_of(bash),
+            Some(HookEvent::ToolUse {
+                agent_id: None,
+                launch: Some(Launch {
+                    id: "b2djt8l8t".into(),
+                    kind: BackgroundKind::Shell,
+                    timeout_secs: None,
+                    persistent: false,
+                }),
+                stopped: None,
+            })
+        );
+
+        let agent = r#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Agent","tool_input":{"description":"d"},"tool_response":{"isAsync":true,"status":"async_launched","agentId":"a8565d3b98e2c0bb8"}}"#;
+        match event_of(agent) {
+            Some(HookEvent::ToolUse {
+                agent_id: None,
+                launch: Some(l),
+                stopped: None,
+            }) => {
+                assert_eq!(l.id, "a8565d3b98e2c0bb8");
+                assert_eq!(l.kind, BackgroundKind::Subagent);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let monitor = r#"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Monitor","tool_input":{"timeout_ms":60000},"tool_response":{"taskId":"b84rmmfs7","timeoutMs":60000,"persistent":false}}"#;
+        match event_of(monitor) {
+            Some(HookEvent::ToolUse {
+                launch: Some(l), ..
+            }) => {
+                assert_eq!(l.id, "b84rmmfs7");
+                assert_eq!(l.kind, BackgroundKind::Monitor);
+                assert_eq!(l.timeout_secs, Some(60));
+                assert!(!l.persistent);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        // A foreground Bash call is not a launch.
+        let fg =
+            r#"{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_response":{"stdout":""}}"#;
+        assert_eq!(
+            event_of(fg),
+            Some(HookEvent::ToolUse {
+                agent_id: None,
+                launch: None,
+                stopped: None
+            })
+        );
+    }
+
+    #[test]
+    fn event_reads_subagent_tool_use_and_lifecycle() {
+        let tool = r#"{"hook_event_name":"PostToolUse","agent_id":"01a1-aaf2","tool_name":"Bash","tool_input":"{\"cmd\":\"x\"}","tool_response":""}"#;
+        assert_eq!(
+            event_of(tool),
+            Some(HookEvent::ToolUse {
+                agent_id: Some("01a1-aaf2".into()),
+                launch: None,
+                stopped: None
+            })
+        );
+        // Codex sends tool_response as a JSON string.
+        let codex_launch = r#"{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_response":"{\"backgroundTaskId\":\"c1\"}"}"#;
+        match event_of(codex_launch) {
+            Some(HookEvent::ToolUse {
+                launch: Some(l), ..
+            }) => assert_eq!(l.id, "c1"),
+            other => panic!("unexpected {other:?}"),
+        }
+        // Subagent activity never launches background work.
+        let sub_launch = r#"{"hook_event_name":"PostToolUse","agent_id":"a","tool_name":"Bash","tool_response":{"backgroundTaskId":"c1"}}"#;
+        assert_eq!(
+            event_of(sub_launch),
+            Some(HookEvent::ToolUse {
+                agent_id: Some("a".into()),
+                launch: None,
+                stopped: None
+            })
+        );
+        assert_eq!(
+            event_of(r#"{"hook_event_name":"SubagentStart","agent_id":"a1"}"#),
+            Some(HookEvent::SubagentStart {
+                agent_id: "a1".into()
+            })
+        );
+        assert_eq!(
+            event_of(r#"{"hook_event_name":"SubagentStop","agent_id":"a1"}"#),
+            Some(HookEvent::SubagentStop {
+                agent_id: "a1".into()
+            })
+        );
+        assert_eq!(
+            event_of(r#"{"hook_event_name":"SubagentStop","agent_id":""}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn event_maps_waiting_stop_and_unknown() {
+        assert_eq!(
+            event_of(r#"{"hook_event_name":"Notification"}"#),
+            Some(HookEvent::Waiting)
+        );
+        assert_eq!(
+            event_of(r#"{"hook_event_name":"PermissionRequest"}"#),
+            Some(HookEvent::Waiting)
+        );
+        assert_eq!(
+            event_of(r#"{"hook_event_name":"Stop"}"#),
+            Some(HookEvent::Stop)
+        );
+        assert_eq!(
+            event_of(r#"{"hook_event_name":"SessionStart"}"#),
+            Some(HookEvent::SessionStart)
+        );
+        assert_eq!(
+            event_of(r#"{"hook_event_name":"UserPromptSubmit","prompt":"hi"}"#),
+            Some(HookEvent::PromptSubmit {
+                prompt: Some("hi".into())
+            })
+        );
+        assert_eq!(event_of(r#"{"session_id":"s"}"#), None);
+        assert_eq!(event_of(r#"{"hook_event_name":"PreToolUse"}"#), None);
+        assert_eq!(
+            event_of(
+                r#"{"hook_event_name":"PostToolUse","tool_name":"TaskStop","tool_input":{"task_id":"b1"}}"#
+            ),
+            Some(HookEvent::ToolUse {
+                agent_id: None,
+                launch: None,
+                stopped: Some("b1".into())
+            })
+        );
+        assert_eq!(
+            event_of(
+                r#"{"hook_event_name":"PostToolUse","tool_name":"KillShell","tool_input":{"shell_id":"b2"}}"#
+            ),
+            Some(HookEvent::ToolUse {
+                agent_id: None,
+                launch: None,
+                stopped: Some("b2".into())
+            })
+        );
+    }
+
+    #[test]
+    fn status_event_carries_transcript_and_falls_back_without_event() {
+        let hook =
+            parse_hook_input(r#"{"hook_event_name":"Stop","transcript_path":"/tmp/t.jsonl"}"#)
+                .unwrap();
+        assert_eq!(
+            hook.status_event(),
+            Some(StatusEvent {
+                event: HookEvent::Stop,
+                transcript: Some(PathBuf::from("/tmp/t.jsonl")),
+            })
+        );
+        let legacy = parse_hook_input(r#"{"session_id":"s"}"#).unwrap();
+        assert_eq!(legacy.status_event(), None);
+    }
+
+    #[test]
+    fn background_status_uses_its_icon_without_auto_clear() {
+        let config = Config::default();
+        let resolved = |status, background| ResolvedStatus { status, background };
+        assert_eq!(
+            status_icon(&config, resolved(AgentStatus::Working, true)),
+            ("⏳", false)
+        );
+        assert_eq!(
+            status_icon(&config, resolved(AgentStatus::Working, false)),
+            ("🤖", false)
+        );
+        assert_eq!(
+            status_icon(&config, resolved(AgentStatus::Done, false)),
+            ("✅", true)
+        );
+        assert_eq!(
+            status_icon(&config, resolved(AgentStatus::Waiting, false)),
+            ("💬", true)
         );
     }
 }

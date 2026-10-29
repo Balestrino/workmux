@@ -699,9 +699,12 @@ impl StateStore {
         let mut manifest = self.load_recovery_manifest_locked(backend, instance)?;
         for state in states {
             let source = RecoverySourceId::from(state);
-            // Resurrection does not use the prompt, so it is not archived.
+            // Resurrection does not use the prompt or the background work of
+            // the old process, so they are not archived.
             let state = &AgentState {
                 prompt: None,
+                turn_active: false,
+                background: Vec::new(),
                 ..state.clone()
             };
             if let Some(entry) = manifest
@@ -1624,6 +1627,8 @@ mod tests {
             agent_kind: None,
             agent_session_id: None,
             prompt: None,
+            turn_active: false,
+            background: Vec::new(),
         }
     }
 
@@ -2436,6 +2441,29 @@ mod tests {
             .unwrap();
         assert_eq!(manifest.entries.len(), 1);
         assert_eq!(manifest.entries[0].state.prompt, None);
+    }
+
+    #[test]
+    fn recovery_entries_do_not_archive_background_work() {
+        let (store, _dir) = test_store();
+        let mut state = context_state("tmux", "default", 1, Some("old"), 1);
+        state.turn_active = true;
+        state.background = vec![crate::state::background::BackgroundItem {
+            id: "b1".to_string(),
+            kind: crate::state::background::BackgroundKind::Shell,
+            started_ts: 1,
+            expires_ts: u64::MAX,
+            transcript_offset: Some(10),
+        }];
+        let manifest = store
+            .with_agent_lock(|store| {
+                store.merge_recovery_locked("tmux", "default", std::slice::from_ref(&state))?;
+                store.load_recovery_manifest_locked("tmux", "default")
+            })
+            .unwrap();
+        assert_eq!(manifest.entries.len(), 1);
+        assert!(manifest.entries[0].state.background.is_empty());
+        assert!(!manifest.entries[0].state.turn_active);
     }
 
     #[test]

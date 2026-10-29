@@ -161,6 +161,9 @@ pub struct StatusIcons {
     pub waiting: Option<String>,
     /// Icon shown when agent is done. Default: ✅
     pub done: Option<String>,
+    /// Icon shown when the agent's turn has ended but background work it
+    /// started is still running. Default: ⏳
+    pub background: Option<String>,
 }
 
 impl StatusIcons {
@@ -174,6 +177,10 @@ impl StatusIcons {
 
     pub fn done(&self) -> &str {
         self.done.as_deref().unwrap_or("✅")
+    }
+
+    pub fn background(&self) -> &str {
+        self.background.as_deref().unwrap_or("⏳")
     }
 }
 
@@ -3367,6 +3374,10 @@ impl Config {
             working: project.status_icons.working.or(self.status_icons.working),
             waiting: project.status_icons.waiting.or(self.status_icons.waiting),
             done: project.status_icons.done.or(self.status_icons.done),
+            background: project
+                .status_icons
+                .background
+                .or(self.status_icons.background),
         };
 
         // Dashboard actions: per-field override
@@ -3849,6 +3860,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 #   working: "🤖"
 #   waiting: "💬"
 #   done: "✅"
+#   background: "⏳"
 
 #-------------------------------------------------------------------------------
 # Agent & AI
@@ -4171,6 +4183,25 @@ mod tests {
     use super::{DashboardConfig, InputExitKey};
     use crate::test_support;
     use tempfile::TempDir;
+
+    #[test]
+    fn config_background_icon_defaults_to_hourglass() {
+        assert_eq!(super::StatusIcons::default().background(), "⏳");
+        let config: Config =
+            serde_yaml::from_str("status_icons:\n  background: \"B\"\n").expect("config parses");
+        assert_eq!(config.status_icons.background(), "B");
+        let global: Config =
+            serde_yaml::from_str("status_icons:\n  background: G\n").expect("config parses");
+        assert_eq!(
+            global
+                .clone()
+                .merge(Config::default())
+                .status_icons
+                .background(),
+            "G"
+        );
+        assert_eq!(global.merge(config).status_icons.background(), "B");
+    }
 
     #[test]
     fn default_session_is_none_by_default() {

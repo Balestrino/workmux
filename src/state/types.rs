@@ -3,12 +3,14 @@
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Characters that need encoding in filenames (beyond control chars).
 /// Includes path separators and other filesystem-unsafe characters.
 pub(crate) const FILENAME_ENCODE_SET: &AsciiSet =
     &CONTROLS.add(b'/').add(b'\\').add(b':').add(b'%');
 
+use super::background::{self, BackgroundItem};
 use crate::multiplexer::types::{AgentPane, AgentStatus};
 
 /// Composite pane identifier for unique state file naming.
@@ -150,6 +152,15 @@ pub struct AgentState {
     /// configuration displays prompts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+
+    /// Whether the agent's own turn is in progress (between prompt submit and
+    /// stop). Background work only shows once the turn has gone idle.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub turn_active: bool,
+
+    /// Background work the agent left running (subagents, shells, monitors).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub background: Vec<BackgroundItem>,
 }
 
 impl AgentState {
@@ -160,11 +171,53 @@ impl AgentState {
             .or_else(|| self.status.is_none().then_some(self.updated_ts))
     }
 
+    /// Whether the agent is idle on its own but has live background work.
+    ///
+    /// Derived, never stored: status `Working`, no active turn, and at least
+    /// one unexpired background item.
+    pub fn in_background(&self, now: u64) -> bool {
+        self.status == Some(AgentStatus::Working)
+            && !self.turn_active
+            && background::has_live(&self.background, now)
+    }
+
+    /// Status to show at `now`.
+    ///
+    /// An agent whose turn has ended and whose background items have all
+    /// expired is done, even if no hook arrived to store that. Otherwise the
+    /// stored status.
+    pub fn effective_status(&self, now: u64) -> Option<AgentStatus> {
+        if self.background_expired(now) {
+            Some(AgentStatus::Done)
+        } else {
+            self.status
+        }
+    }
+
+    /// Whether the stored `Working` only stood for background work that has
+    /// all expired by `now`.
+    fn background_expired(&self, now: u64) -> bool {
+        self.status == Some(AgentStatus::Working)
+            && !self.turn_active
+            && !self.background.is_empty()
+            && !background::has_live(&self.background, now)
+    }
+
     /// Convert to AgentPane for dashboard display.
     ///
     /// The caller is responsible for providing the best available session/window names
     /// (from live pane info when available, falling back to stored values).
     pub fn to_agent_pane(&self, session: String, window_name: String) -> AgentPane {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // Once background work has expired the agent became done when the
+        // last item expired, so its timestamps start there.
+        let expired_at = self
+            .background_expired(now)
+            .then(|| self.background.iter().map(|item| item.expires_ts).max())
+            .flatten();
         AgentPane {
             session,
             window_name,
@@ -173,14 +226,15 @@ impl AgentState {
             window_index: None,
             path: self.cwd.as_ref().unwrap_or(&self.workdir).clone(),
             pane_title: self.pane_title.clone(),
-            status: self.status,
-            status_ts: self.status_ts,
-            activity_ts: self.activity_ts(),
+            status: self.effective_status(now),
+            status_ts: expired_at.or(self.status_ts),
+            activity_ts: expired_at.or_else(|| self.activity_ts()),
             updated_ts: Some(self.updated_ts),
             window_cmd: None,
             agent_command: Some(self.command.clone()),
             agent_kind: self.agent_kind.clone(),
             prompt: self.prompt.clone(),
+            background: self.in_background(now),
         }
     }
 }
@@ -280,6 +334,7 @@ pub struct RuntimeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::background::BackgroundKind;
 
     fn legacy_state(status: Option<&str>, status_ts: Option<u64>, updated_ts: u64) -> AgentState {
         serde_json::from_value(serde_json::json!({
@@ -300,6 +355,88 @@ mod tests {
             "boot_id": null
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn in_background_requires_working_idle_turn_and_live_item() {
+        let mut state = legacy_state(Some("working"), Some(1), 1);
+        state.background.push(BackgroundItem {
+            id: "a".into(),
+            kind: BackgroundKind::Shell,
+            started_ts: 10,
+            expires_ts: 100,
+            transcript_offset: None,
+        });
+        assert!(state.in_background(50));
+        assert!(!state.in_background(100));
+        state.turn_active = true;
+        assert!(!state.in_background(50));
+        state.turn_active = false;
+        state.status = Some(AgentStatus::Done);
+        assert!(!state.in_background(50));
+    }
+
+    fn shell_item(id: &str, expires_ts: u64) -> BackgroundItem {
+        BackgroundItem {
+            id: id.into(),
+            kind: BackgroundKind::Shell,
+            started_ts: 10,
+            expires_ts,
+            transcript_offset: None,
+        }
+    }
+
+    #[test]
+    fn effective_status_is_done_once_every_item_has_expired() {
+        let mut state = legacy_state(Some("working"), Some(5), 5);
+        state.background = vec![shell_item("a", 100), shell_item("b", 80)];
+        assert_eq!(state.effective_status(99), Some(AgentStatus::Working));
+        assert_eq!(state.effective_status(100), Some(AgentStatus::Done));
+
+        // A running turn, or plain working with nothing tracked, stays working.
+        state.turn_active = true;
+        assert_eq!(state.effective_status(100), Some(AgentStatus::Working));
+        state.turn_active = false;
+        state.background.clear();
+        assert_eq!(state.effective_status(100), Some(AgentStatus::Working));
+
+        // Other statuses are never rewritten.
+        state.background = vec![shell_item("a", 100)];
+        state.status = Some(AgentStatus::Waiting);
+        assert_eq!(state.effective_status(100), Some(AgentStatus::Waiting));
+        state.status = None;
+        assert_eq!(state.effective_status(100), None);
+    }
+
+    #[test]
+    fn agent_pane_shows_done_after_background_expired() {
+        let mut state = legacy_state(Some("working"), Some(5), 5);
+        state.activity_ts = Some(5);
+        state.background = vec![shell_item("a", 100), shell_item("b", 80)];
+        let pane = state.to_agent_pane("main".into(), "wm-test".into());
+        assert_eq!(pane.status, Some(AgentStatus::Done));
+        assert!(!pane.background);
+        assert_eq!(pane.status_ts, Some(100));
+        assert_eq!(pane.activity_ts, Some(100));
+
+        // Live items keep the stored working status and its timestamps.
+        let far = u64::MAX / 2;
+        state.background = vec![shell_item("a", far)];
+        let pane = state.to_agent_pane("main".into(), "wm-test".into());
+        assert_eq!(pane.status, Some(AgentStatus::Working));
+        assert!(pane.background);
+        assert_eq!(pane.status_ts, Some(5));
+        assert_eq!(pane.activity_ts, Some(5));
+    }
+
+    #[test]
+    fn legacy_state_loads_without_background_fields() {
+        let state = legacy_state(Some("done"), Some(100), 200);
+        assert!(!state.turn_active);
+        assert!(state.background.is_empty());
+        let json = serde_json::to_value(&state).unwrap();
+        assert!(json.get("turn_active").is_none());
+        assert!(json.get("background").is_none());
     }
 
     #[test]

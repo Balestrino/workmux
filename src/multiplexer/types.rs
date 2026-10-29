@@ -127,6 +127,9 @@ pub struct AgentPane {
     /// Latest user prompt captured from the agent's hooks.
     #[serde(default)]
     pub prompt: Option<String>,
+    /// The agent is idle but has live background work (derived from state).
+    #[serde(default)]
+    pub background: bool,
 }
 
 impl AgentPane {

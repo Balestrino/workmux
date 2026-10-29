@@ -135,7 +135,7 @@ pub fn list_in(
     // Pre-calculate canonical paths for agents to avoid repeated syscalls
     let agent_panes_canon: Vec<_> = agent_panes
         .iter()
-        .map(|a| (canon_or_self(&a.path), a.status))
+        .map(|a| (canon_or_self(&a.path), a.status, a.background))
         .collect();
 
     // Batch-load all worktree modes in a single git config call
@@ -220,20 +220,21 @@ pub fn list_in(
             // Match agents to this worktree by comparing canonicalized paths.
             // An agent's workdir should be within the worktree directory.
             let canon_wt_path = canon_or_self(&path);
-            let matching_statuses: Vec<_> = agent_panes_canon
+            let matching: Vec<_> = agent_panes_canon
                 .iter()
-                .filter(|(canon_agent_path, _)| {
+                .filter(|(canon_agent_path, _, _)| {
                     *canon_agent_path == canon_wt_path
                         || canon_agent_path.starts_with(&canon_wt_path)
                 })
-                .filter_map(|(_, status)| *status)
+                .filter_map(|(_, status, background)| status.map(|s| (s, *background)))
                 .collect();
 
-            let agent_status = if matching_statuses.is_empty() {
+            let agent_status = if matching.is_empty() {
                 None
             } else {
                 Some(AgentStatusSummary {
-                    statuses: matching_statuses,
+                    background: matching.iter().filter(|(_, bg)| *bg).count(),
+                    statuses: matching.into_iter().map(|(s, _)| s).collect(),
                 })
             };
 

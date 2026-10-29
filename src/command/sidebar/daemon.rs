@@ -2011,10 +2011,11 @@ impl InactivityTracker {
     ) -> HashSet<String> {
         use std::hash::{Hash, Hasher};
 
-        // Build lookup of working agents
+        // Build lookup of working agents. Background agents sit idle at their
+        // prompt by design, so they are excluded from inactivity detection.
         let working: HashMap<&str, &crate::multiplexer::AgentPane> = agents
             .iter()
-            .filter(|a| a.status == Some(crate::multiplexer::AgentStatus::Working))
+            .filter(|a| a.status == Some(crate::multiplexer::AgentStatus::Working) && !a.background)
             .map(|a| (a.pane_id.as_str(), a))
             .collect();
 
@@ -2769,13 +2770,14 @@ fn apply_tick_effects(
 }
 
 /// Capture working panes, including interrupted ones, to detect resumed output.
+/// Background agents are skipped: inactivity detection ignores them.
 fn gather_captures(
     agents: &[crate::multiplexer::AgentPane],
     mux: &dyn Multiplexer,
 ) -> HashMap<String, String> {
     agents
         .iter()
-        .filter(|a| a.status == Some(crate::multiplexer::AgentStatus::Working))
+        .filter(|a| a.status == Some(crate::multiplexer::AgentStatus::Working) && !a.background)
         .filter_map(|a| {
             mux.capture_pane(&a.pane_id, 5)
                 .map(|content| (a.pane_id.clone(), content))
@@ -3147,6 +3149,7 @@ mod tests {
             agent_command: None,
             agent_kind: None,
             prompt: None,
+            background: false,
         }
     }
 
@@ -4438,6 +4441,22 @@ mod tests {
     }
 
     #[test]
+    fn background_agents_are_not_interrupted() {
+        let mut tracker = InactivityTracker::new(Duration::from_secs(10));
+        let agents = vec![AgentPane {
+            background: true,
+            ..working_agent("%1", 1)
+        }];
+        let t0 = Instant::now();
+
+        tracker.check_with(&agents, t0, |_| Some("hello".into()));
+        let result = tracker.check_with(&agents, t0 + Duration::from_secs(11), |_| {
+            Some("hello".into())
+        });
+        assert!(!result.contains("%1"), "{result:?}");
+    }
+
+    #[test]
     fn no_interruption_before_timeout() {
         let mut tracker = InactivityTracker::new(Duration::from_secs(10));
         let agents = vec![working_agent("%1", 1)];
@@ -4779,6 +4798,8 @@ mod tests {
                 agent_kind: None,
                 agent_session_id: None,
                 prompt: None,
+                turn_active: false,
+                background: Vec::new(),
             };
             store.upsert_agent(&state).unwrap();
         }

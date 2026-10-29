@@ -177,6 +177,8 @@ mod tests {
             agent_kind: None,
             agent_session_id: None,
             prompt: None,
+            turn_active: false,
+            background: Vec::new(),
         }
     }
 

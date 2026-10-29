@@ -250,6 +250,9 @@ pub struct ForkSource {
 #[derive(Clone)]
 pub struct AgentStatusSummary {
     pub statuses: Vec<AgentStatus>,
+    /// How many of the agents are in the background state (idle with live
+    /// background work). They stay `Working` in `statuses`.
+    pub background: usize,
 }
 
 /// List all worktrees with their status

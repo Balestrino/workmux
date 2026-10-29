@@ -59,8 +59,9 @@ api-work    1w   -      ✓    -         ~/project__worktrees/api-work
   - `🤖` = agent is working
   - `💬` = agent is waiting for user input
   - `✅` = agent finished
+  - `⏳` = turn ended, background work still running
   - When multiple agents run in one worktree, shows a count (e.g., `2🤖 1✅`)
-  - When stdout is piped (e.g., by a script or agent), text labels are used instead: `working`, `waiting`, `done`
+  - When stdout is piped (e.g., by a script or agent), text labels are used instead: `working`, `waiting`, `done`, `background`
 - `✓` in MUX column = multiplexer window exists for this worktree
 - `●` in UNMERGED column = branch has commits not merged into main
 - `-` = not applicable
