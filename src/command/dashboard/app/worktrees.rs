@@ -471,7 +471,10 @@ fn enter_target(rows: &[DisplayRow], selected: usize) -> Option<EnterTarget> {
     match rows.get(selected)? {
         DisplayRow::Agent { pane_id, .. } => Some(EnterTarget::Pane(pane_id.clone())),
         DisplayRow::Worktree(i) => match rows.get(selected + 1) {
-            Some(DisplayRow::Agent { pane_id, .. }) => Some(EnterTarget::Pane(pane_id.clone())),
+            Some(DisplayRow::Agent {
+                pane_id,
+                parent: Some(parent),
+            }) if parent == i => Some(EnterTarget::Pane(pane_id.clone())),
             _ => Some(EnterTarget::Worktree(*i)),
         },
         DisplayRow::Orphan(_) | DisplayRow::OutsideHeader => None,
@@ -994,20 +997,6 @@ impl App {
             return true;
         }
         false
-    }
-
-    /// Toggle the info panel (not on an outside-group agent row).
-    pub fn toggle_worktree_info(&mut self) {
-        if !self.outside_agent_blocked() {
-            self.worktree_panels.toggle_info();
-        }
-    }
-
-    /// Toggle the git log panel (not on an outside-group agent row).
-    pub fn toggle_worktree_log(&mut self) {
-        if !self.outside_agent_blocked() {
-            self.worktree_panels.toggle_log();
-        }
     }
 
     /// The orphan row under the selection, if the selection is on one.
@@ -2690,6 +2679,31 @@ mod tests {
         assert_eq!(enter_target(&bare, 1), Some(EnterTarget::Pane("p1".into())));
         assert_eq!(enter_target(&[DisplayRow::Orphan(0)], 0), None);
         assert_eq!(enter_target(&bare, 9), None);
+        // The next row is only a sub-row when it belongs to this worktree.
+        let other_parent = [DisplayRow::Worktree(0), ag("p1", Some(1))];
+        assert_eq!(
+            enter_target(&other_parent, 0),
+            Some(EnterTarget::Worktree(0))
+        );
+        let outside_next = [DisplayRow::Worktree(0), ag("p2", None)];
+        assert_eq!(
+            enter_target(&outside_next, 0),
+            Some(EnterTarget::Worktree(0))
+        );
+    }
+
+    #[test]
+    fn panel_toggles_work_on_outside_agent_rows() {
+        // `i`/`l` are view toggles: the dispatcher flips `worktree_panels`
+        // directly, whatever the selected row (here an outside-group agent).
+        let selected = ag("p2", None);
+        assert!(is_outside_agent(&selected));
+        let mut panels = WorktreePanels::default();
+        panels.toggle_info();
+        panels.toggle_log();
+        assert!(panels.info && panels.log);
+        panels.toggle_info();
+        assert!(!panels.info && panels.log);
     }
 
     #[test]

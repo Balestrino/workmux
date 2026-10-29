@@ -277,11 +277,11 @@ pub fn apply_action(app: &mut App, action: Action) -> bool {
             false
         }
         Action::ToggleWorktreeInfo => {
-            app.toggle_worktree_info();
+            app.worktree_panels.toggle_info();
             false
         }
         Action::ToggleWorktreeLog => {
-            app.toggle_worktree_log();
+            app.worktree_panels.toggle_log();
             false
         }
 
