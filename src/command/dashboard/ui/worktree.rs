@@ -693,10 +693,7 @@ fn build_worktree_table(
 
 /// Render the worktree preview: info panel (left) + styled git log (right).
 pub fn render_worktree_preview(f: &mut Frame, app: &mut App, area: Rect) {
-    let selected_worktree = app
-        .worktree_table_state
-        .selected()
-        .and_then(|idx| app.worktrees.get(idx));
+    let selected_worktree = app.selected_worktree();
     let selected_orphan = app.selected_orphan();
     let (info_area, log_area) = worktree_preview_areas(area, app.worktree_panels);
 

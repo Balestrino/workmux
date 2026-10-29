@@ -52,6 +52,7 @@ impl App {
                 self.removals.filter_snapshot(&mut worktrees);
                 let needs_pr_fetch = self.all_worktrees.is_empty() && !worktrees.is_empty();
                 self.all_worktrees = worktrees;
+                self.worktrees_loaded = true;
                 self.reindex_worktree_info();
                 self.apply_worktree_filters();
 

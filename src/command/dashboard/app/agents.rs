@@ -300,6 +300,7 @@ impl App {
         let window_hint = self
             .agents
             .iter()
+            .chain(&self.host_agents)
             .find(|a| a.pane_id == target_pane_id)
             .map(|a| a.window_name.as_str());
         if self
@@ -629,11 +630,12 @@ impl App {
                 .and_then(|i| self.agents.get(i))
                 .and_then(|agent| self.get_pr_for_agent(agent))
                 .cloned(),
-            DashboardTab::Worktrees => self
-                .worktree_table_state
-                .selected()
-                .and_then(|i| self.worktrees.get(i))
-                .and_then(|wt| wt.pr_info.clone()),
+            DashboardTab::Worktrees => {
+                if self.outside_agent_blocked() {
+                    return;
+                }
+                self.selected_worktree().and_then(|wt| wt.pr_info.clone())
+            }
         };
 
         match pr {

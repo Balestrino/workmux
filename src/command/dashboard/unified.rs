@@ -1,11 +1,9 @@
 //! Pure logic for the unified worktree view: agents as sub-rows of the
 //! worktree they work in.
 
-// Task 2 wires this module into the App and removes this allow.
-#![allow(dead_code)]
-
 use std::cmp::Ordering;
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
+use std::path::PathBuf;
 
 use crate::multiplexer::{AgentPane, AgentStatus};
 use crate::util::canon_or_self;
@@ -31,6 +29,8 @@ pub struct RowInputs<'a> {
     pub visible_worktrees: &'a [PathBuf],
     pub all_worktrees: &'a [PathBuf],
     pub agents: &'a [AgentPane],
+    /// `assign_agents(all_worktrees, agents)`, computed once by the caller.
+    pub assignment: &'a [Option<usize>],
     pub orphan_count: usize,
     pub filter: &'a str,
     pub outside_group: bool,
@@ -77,20 +77,25 @@ fn sorted_ids(agents: &[AgentPane], mut idx: Vec<usize>) -> Vec<String> {
     idx.into_iter().map(|i| agents[i].pane_id.clone()).collect()
 }
 
+/// Case-insensitive title match; `filter` must already be lowercase.
+fn title_contains(agent: &AgentPane, filter: &str) -> bool {
+    agent
+        .pane_title
+        .as_deref()
+        .is_some_and(|t| t.to_lowercase().contains(filter))
+}
+
 fn matches_filter(agent: &AgentPane, filter: &str) -> bool {
     if filter.is_empty() {
         return true;
     }
     let f = filter.to_lowercase();
-    agent
-        .pane_title
-        .as_deref()
-        .is_some_and(|t| t.to_lowercase().contains(&f))
-        || agent.path.to_string_lossy().to_lowercase().contains(&f)
+    title_contains(agent, &f) || agent.path.to_string_lossy().to_lowercase().contains(&f)
 }
 
 pub fn build_display_rows(inputs: &RowInputs) -> Vec<DisplayRow> {
-    let assignment = assign_agents(inputs.all_worktrees, inputs.agents);
+    let assignment = inputs.assignment;
+    debug_assert_eq!(assignment.len(), inputs.agents.len());
     let canon_visible: Vec<PathBuf> = inputs
         .visible_worktrees
         .iter()
@@ -144,29 +149,20 @@ pub fn build_display_rows(inputs: &RowInputs) -> Vec<DisplayRow> {
     rows
 }
 
-/// True when an agent assigned to `path` has a title containing the
-/// (case-insensitive) filter.
-pub fn worktree_visible_by_agent(
-    path: &Path,
+/// Indices into `all_worktrees` (the list `assignment` was computed
+/// against) that have an agent whose title contains the (case-insensitive)
+/// filter.
+pub fn worktrees_visible_by_agent(
+    assignment: &[Option<usize>],
     agents: &[AgentPane],
-    all_worktrees: &[PathBuf],
     filter: &str,
-) -> bool {
-    let canon = canon_or_self(path);
-    let Some(wi) = all_worktrees.iter().position(|p| canon_or_self(p) == canon) else {
-        return false;
-    };
+) -> HashSet<usize> {
     let f = filter.to_lowercase();
-    assign_agents(all_worktrees, agents)
+    assignment
         .iter()
         .zip(agents)
-        .any(|(a, agent)| {
-            *a == Some(wi)
-                && agent
-                    .pane_title
-                    .as_deref()
-                    .is_some_and(|t| t.to_lowercase().contains(&f))
-        })
+        .filter_map(|(a, agent)| a.filter(|_| title_contains(agent, &f)))
+        .collect()
 }
 
 pub fn is_selectable(row: &DisplayRow) -> bool {
@@ -263,10 +259,12 @@ mod tests {
         filter: &str,
         outside_group: bool,
     ) -> Vec<DisplayRow> {
+        let assignment = assign_agents(all, agents);
         build_display_rows(&RowInputs {
             visible_worktrees: wts,
             all_worktrees: all,
             agents,
+            assignment: &assignment,
             orphan_count: 1,
             filter,
             outside_group,
@@ -329,21 +327,17 @@ mod tests {
 
     #[test]
     fn worktree_visible_by_agent_title() {
-        let wts = paths(&["/ws/w"]);
+        let wts = paths(&["/ws/v", "/ws/w"]);
         let mut a = agent("A", "/ws/w");
         a.pane_title = Some("Fork workmux".into());
-        let agents = [a];
-        assert!(worktree_visible_by_agent(
-            Path::new("/ws/w"),
-            &agents,
-            &wts,
-            "fork"
-        ));
-        assert!(!worktree_visible_by_agent(
-            Path::new("/ws/w"),
-            &agents,
-            &wts,
-            "zzz"
-        ));
+        let mut b = agent("B", "/elsewhere");
+        b.pane_title = Some("Fork too".into());
+        let agents = [a, b];
+        let assignment = assign_agents(&wts, &agents);
+        assert_eq!(
+            worktrees_visible_by_agent(&assignment, &agents, "fork"),
+            HashSet::from([1])
+        );
+        assert!(worktrees_visible_by_agent(&assignment, &agents, "zzz").is_empty());
     }
 }

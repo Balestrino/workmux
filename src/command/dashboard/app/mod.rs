@@ -36,6 +36,7 @@ const PR_FETCH_INTERVAL: Duration = Duration::from_secs(30);
 use super::scope::ScopeMode;
 use super::settings::{load_hide_stale, load_last_pane_id, load_preview_size};
 use super::sort::{SortMode, WorktreeSortMode};
+use super::unified::DisplayRow;
 use super::worktree_info::{InfoIndex, InfoReport, OrphanEntry};
 
 /// App state for the TUI
@@ -47,6 +48,15 @@ pub struct App {
     pub agents: Vec<AgentPane>,
     /// Full agent list before name/stale filtering (populated by refresh())
     all_agents: Vec<AgentPane>,
+    /// Unified worktree view (`dashboard.agents_tab: false`): agents are
+    /// sub-rows of the Worktrees table and the Agents tab is hidden.
+    pub unified: bool,
+    /// Every reconciled agent on the host, before the session scope and the
+    /// stale filter (refreshed by refresh()); the unified view's agent set.
+    pub host_agents: Vec<AgentPane>,
+    /// Rows of the Worktrees table: worktrees, their agent sub-rows (unified
+    /// mode), orphans and the "Outside worktrees" group.
+    pub display_rows: Vec<DisplayRow>,
     pub table_state: TableState,
     /// Track the selected item by pane_id to preserve selection across reorders
     selected_pane_id: Option<String>,
@@ -143,12 +153,17 @@ pub struct App {
     pub active_tab: DashboardTab,
     /// Full worktree list from background fetch (baseline for filtering/sorting)
     all_worktrees: Vec<WorktreeInfo>,
+    /// A worktree list has arrived for the current project selection. Until
+    /// then every agent would look unassigned, so the outside group waits.
+    worktrees_loaded: bool,
     /// Filtered and sorted worktree list for display
     pub worktrees: Vec<WorktreeInfo>,
     /// Table state for the worktree view
     pub worktree_table_state: TableState,
     /// Track selected worktree by path for stable selection
     selected_worktree_path: Option<PathBuf>,
+    /// Pane of the selected agent sub-row (unified mode), restored before the path.
+    selected_agent_pane: Option<String>,
     /// Filter text for worktree view (separate from agent filter)
     pub worktree_filter_text: String,
     /// Whether worktree filter input is active
@@ -244,12 +259,16 @@ impl App {
         let check_statuses = crate::github::load_check_cache();
         let hide_stale = load_hide_stale();
         let last_pane_id = load_last_pane_id();
+        let unified = !config.dashboard.agents_tab();
 
         let mut app = Self {
             terminal_area: Rect::default(),
             mux,
             agents: Vec::new(),
             all_agents: Vec::new(),
+            unified,
+            host_agents: Vec::new(),
+            display_rows: Vec::new(),
             table_state: TableState::default(),
             selected_pane_id: None,
             current_worktree,
@@ -303,11 +322,17 @@ impl App {
             filter_active: false,
             filter_text: String::new(),
             pending_kill_pane_id: None,
-            active_tab: DashboardTab::Agents,
+            active_tab: if unified {
+                DashboardTab::Worktrees
+            } else {
+                DashboardTab::Agents
+            },
             all_worktrees: Vec::new(),
+            worktrees_loaded: false,
             worktrees: Vec::new(),
             worktree_table_state: TableState::default(),
             selected_worktree_path: None,
+            selected_agent_pane: None,
             worktree_filter_text: String::new(),
             worktree_filter_active: false,
             worktree_sort_mode: WorktreeSortMode::load(),
@@ -413,6 +438,10 @@ impl App {
         self.maybe_spawn_project_names_fetch();
         self.maybe_spawn_worktree_info_fetch();
 
+        // The unified view places every agent: capture them before the
+        // session scope (the stale filter only touches `agents`).
+        self.host_agents = self.all_agents.clone();
+
         // Apply session scope filter after caching repo roots
         self.scope_mode
             .retain_agents(&mut self.all_agents, self.launch_session.as_deref());
@@ -445,6 +474,12 @@ impl App {
 
         // Apply name filter, stale filter, sort, and restore selection
         self.apply_filters();
+
+        // Agent sub-rows follow the reloaded agents.
+        if self.unified {
+            self.rebuild_display_rows();
+            self.update_worktree_preview();
+        }
     }
 
     pub(crate) fn keymap_context(&self) -> Context {
