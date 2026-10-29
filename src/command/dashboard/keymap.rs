@@ -109,6 +109,8 @@ fn worktree_normal_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('R') => Some(Action::StartSweep),
         KeyCode::Char('s') => Some(Action::CycleWorktreeSortMode),
         KeyCode::Char('p') => Some(Action::ShowProjectPicker),
+        KeyCode::Char('i') => Some(Action::ToggleWorktreeInfo),
+        KeyCode::Char('l') => Some(Action::ToggleWorktreeLog),
         KeyCode::Char('a') => Some(Action::AddWorktree),
         KeyCode::Char('b') => Some(Action::ShowBaseBranchPicker),
         KeyCode::Char('/') => Some(Action::EnterFilterMode),
@@ -254,6 +256,8 @@ pub fn help_rows(ctx: Context, exit_key: InputExitKey) -> Vec<(String, &'static 
             ("s", "Cycle sort mode"),
             ("b", "Change base branch"),
             ("p", "Switch project"),
+            ("i", "Toggle info panel"),
+            ("l", "Toggle git log panel"),
             ("/", "Filter worktrees"),
             ("T", "Cycle theme"),
             (":", "Command palette"),
@@ -468,5 +472,21 @@ mod tests {
             action_for_key(Context::DashboardNormal, shift_f, InputExitKey::default()),
             Some(Action::ToggleScopeFilter)
         );
+    }
+
+    #[test]
+    fn worktree_panel_toggle_keys() {
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        assert_eq!(
+            action_for_key(Context::WorktreeNormal, key('i'), InputExitKey::default()),
+            Some(Action::ToggleWorktreeInfo)
+        );
+        assert_eq!(
+            action_for_key(Context::WorktreeNormal, key('l'), InputExitKey::default()),
+            Some(Action::ToggleWorktreeLog)
+        );
+        let rows = help_rows(Context::WorktreeNormal, InputExitKey::default());
+        assert!(rows.contains(&("i".to_string(), "Toggle info panel")));
+        assert!(rows.contains(&("l".to_string(), "Toggle git log panel")));
     }
 }

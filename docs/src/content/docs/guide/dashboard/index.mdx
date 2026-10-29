@@ -45,7 +45,7 @@ See [command reference](/reference/commands/dashboard/) for CLI options.
 The dashboard has two views, toggled with `Tab`:
 
 - **Agents**: Shows all running agent panes with their status, git info, GitHub branch checks, and live terminal preview
-- **Worktrees**: Shows all git worktrees with branch, PR status, GitHub branch checks, and agent summary. Press `r` to remove a worktree (kills agent, removes worktree, deletes branch).
+- **Worktrees**: Shows all git worktrees with branch, PR status, GitHub branch checks, and agent summary. Press `r` to remove a worktree (kills agent, removes worktree, deletes branch). The table fills the tab at startup; press `i` to open the info panel and `l` to open the git log panel under it (both side by side when open).
 
 ## Keybindings (Agents view)
 
@@ -92,6 +92,8 @@ Agent jumps close the dashboard by default. See [`close_on_jump`](/guide/dashboa
 | `R`      | Sweep (bulk remove merged/gone)        |
 | `s`      | Cycle sort mode                        |
 | `p`      | Switch project                         |
+| `i`      | Toggle info panel                      |
+| `l`      | Toggle git log panel                   |
 | `/`      | Filter worktrees by name/branch        |
 | `j`/`k`  | Navigate up/down                       |
 | `T`      | Cycle theme                            |

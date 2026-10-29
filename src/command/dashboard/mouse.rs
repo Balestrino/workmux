@@ -9,7 +9,7 @@ use super::app::{
     App, DashboardTab, MouseRowClick, MouseRowId, PaletteCommand, RowContextKind, RowContextMenu,
     ViewMode,
 };
-use super::layout::{dashboard_content_areas, dashboard_outer_areas};
+use super::layout::{dashboard_content_areas, dashboard_outer_areas, preview_visible};
 use crate::config::DashboardLayout;
 
 const TABLE_HEADER_HEIGHT: u16 = 1;
@@ -415,7 +415,11 @@ fn dashboard_target_at(app: &App, column: u16, row: u16) -> MouseTarget {
     };
     dashboard_surface_target(
         area,
-        app.mux.supports_preview(),
+        preview_visible(
+            app.mux.supports_preview(),
+            app.active_tab,
+            app.worktree_panels,
+        ),
         app.preview_size,
         app.config.dashboard.layout.unwrap_or_default(),
         offset,
@@ -569,6 +573,8 @@ fn worktree_footer_items(app: &App) -> Vec<FooterItem> {
             Action::CycleWorktreeSortMode,
         ),
         FooterItem::action("p Project", Action::ShowProjectPicker),
+        FooterItem::action("i Info", Action::ToggleWorktreeInfo),
+        FooterItem::action("l Log", Action::ToggleWorktreeLog),
     ];
     if !app.worktree_filter_text.is_empty() {
         items.push(FooterItem::action(

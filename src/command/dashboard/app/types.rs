@@ -60,6 +60,28 @@ pub enum DashboardTab {
     Worktrees,
 }
 
+/// Panels shown under the worktree table. All closed by default, so the table
+/// fills the tab; toggled with keys and never persisted.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct WorktreePanels {
+    pub info: bool,
+    pub log: bool,
+}
+
+impl WorktreePanels {
+    pub fn any(self) -> bool {
+        self.info || self.log
+    }
+
+    pub fn toggle_info(&mut self) {
+        self.info = !self.info;
+    }
+
+    pub fn toggle_log(&mut self) {
+        self.log = !self.log;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MouseRowId {
     Agent(String),
@@ -683,5 +705,49 @@ mod removal_tests {
         state.filter_snapshot(&mut snapshot);
         assert_eq!(snapshot.len(), 1);
         assert!(!state.contains(&snapshot[0].path));
+    }
+}
+
+#[cfg(test)]
+mod worktree_panels_tests {
+    use super::*;
+
+    #[test]
+    fn panels_start_closed() {
+        let panels = WorktreePanels::default();
+        assert!(!panels.info && !panels.log);
+        assert!(!panels.any());
+    }
+
+    #[test]
+    fn toggles_flip_one_panel_each() {
+        let mut panels = WorktreePanels::default();
+        panels.toggle_info();
+        assert_eq!(
+            panels,
+            WorktreePanels {
+                info: true,
+                log: false
+            }
+        );
+        panels.toggle_log();
+        assert_eq!(
+            panels,
+            WorktreePanels {
+                info: true,
+                log: true
+            }
+        );
+        panels.toggle_info();
+        assert_eq!(
+            panels,
+            WorktreePanels {
+                info: false,
+                log: true
+            }
+        );
+        assert!(panels.any());
+        panels.toggle_log();
+        assert!(!panels.any());
     }
 }
