@@ -71,6 +71,80 @@ pub fn remove(items: &mut Vec<BackgroundItem>, id: &str) -> bool {
     items.len() != before
 }
 
+/// A background work item started by a tool call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Launch {
+    pub id: String,
+    pub kind: BackgroundKind,
+    /// Requested timeout of a monitor, in seconds.
+    pub timeout_secs: Option<u64>,
+    pub persistent: bool,
+}
+
+/// An agent hook event, reduced to what status tracking needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HookEvent {
+    SessionStart,
+    PromptSubmit {
+        prompt: Option<String>,
+    },
+    ToolUse {
+        /// Set when a subagent made the call.
+        agent_id: Option<String>,
+        launch: Option<Launch>,
+        /// Task or shell id the agent asked to stop.
+        stopped: Option<String>,
+    },
+    SubagentStart {
+        agent_id: String,
+    },
+    SubagentStop {
+        agent_id: String,
+    },
+    Waiting,
+    Stop,
+}
+
+const NOTIFICATION_OPEN: &str = "<task-notification>";
+const NOTIFICATION_CLOSE: &str = "</task-notification>";
+
+/// Text between `<tag>` and `</tag>` in `block`, trimmed.
+fn tag_value<'a>(block: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = block.find(&open)? + open.len();
+    let end = block[start..].find(&close)? + start;
+    Some(block[start..end].trim())
+}
+
+/// Ids of tasks that a `<task-notification>` block reports as finished.
+///
+/// A block counts when it carries a `<status>` other than `running`;
+/// monitor event blocks have no status and are ignored. The text may be a
+/// JSON-escaped transcript line, so common escapes are undone first.
+pub fn terminal_task_ids(text: &str) -> Vec<String> {
+    let text = if text.contains("\\n") || text.contains("\\\"") {
+        text.replace("\\n", "\n").replace("\\\"", "\"")
+    } else {
+        text.to_string()
+    };
+    let mut ids = Vec::new();
+    let mut rest = text.as_str();
+    while let Some(start) = rest.find(NOTIFICATION_OPEN) {
+        let body = &rest[start + NOTIFICATION_OPEN.len()..];
+        let end = body.find(NOTIFICATION_CLOSE).unwrap_or(body.len());
+        let block = &body[..end];
+        if let (Some(id), Some(status)) = (tag_value(block, "task-id"), tag_value(block, "status"))
+            && !id.is_empty()
+            && status != "running"
+        {
+            ids.push(id.to_string());
+        }
+        rest = &body[end..];
+    }
+    ids
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +200,25 @@ mod tests {
         upsert(&mut items, item("x", 1, 10));
         assert!(remove(&mut items, "x"));
         assert!(items.is_empty());
+    }
+
+    #[test]
+    fn terminal_task_ids_pairs_id_with_status() {
+        let text = "<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>t</tool-use-id>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>\nnoise\n<task-notification>\n<task-id>m1</task-id>\n<event>tick</event>\n</task-notification>";
+        assert_eq!(terminal_task_ids(text), vec!["b1".to_string()]);
+
+        let running = "<task-notification>\n<task-id>r1</task-id>\n<status>running</status>\n</task-notification>";
+        assert!(terminal_task_ids(running).is_empty());
+
+        let killed = "<task-notification>\n<task-id>k1</task-id>\n<status>killed</status>\n</task-notification>";
+        assert_eq!(terminal_task_ids(killed), vec!["k1".to_string()]);
+    }
+
+    #[test]
+    fn terminal_task_ids_reads_json_escaped_transcript() {
+        let block = "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>\"x\"</summary>\n</task-notification>";
+        let escaped = serde_json::to_string(block).unwrap();
+        assert!(escaped.contains("\\n"));
+        assert_eq!(terminal_task_ids(&escaped), vec!["b1".to_string()]);
     }
 }
