@@ -47,6 +47,35 @@ The dashboard has two views, toggled with `Tab`:
 - **Agents**: Shows all running agent panes with their status, git info, GitHub branch checks, and live terminal preview
 - **Worktrees**: Shows all git worktrees with branch, PR status, GitHub branch checks, and agent summary. Press `r` to remove a worktree (kills agent, removes worktree, deletes branch). The table fills the tab at startup; press `i` to open the info panel and `l` to open the git log panel under it (both side by side when open).
 
+:::note[Fork: unified worktree view]
+In the Octolabs fork the dashboard is a single worktree view by default: the Agents tab is hidden and `Tab` does nothing. See [Unified worktree view](#unified-worktree-view) below; set [`dashboard.agents_tab: true`](/guide/dashboard/configuration/#agents-tab) to get the two tabs back.
+:::
+
+## Unified worktree view
+
+With `dashboard.agents_tab` unset or `false` (the fork default) the dashboard shows only the Worktrees view, and each worktree row is followed by one sub-row per agent working in it:
+
+```text
+ wm  feat-unified-view   feat/unified-view   ...
+   └ 🤖 3m  Implement docs
+   └ 💬 12m Review spec
+ wm  primary-clone       main               ...
+ Outside worktrees
+   └ ✅ 1h  Memory cleanup (~/.claude/projects/-home-tore/memory)
+```
+
+- **Sub-rows** show `└`, the status icon (same icons, colours and spinner as the Agents view, including the background icon), the elapsed time and the pane title. A sub-row without a status timestamp omits the elapsed time. Stale agents are dimmed. Sub-rows are ordered waiting, working, background, done, no status; ties by most recent activity first.
+- **Assignment**: an agent belongs to the deepest listed worktree whose path contains the agent's directory (the hook `cwd` when reported, else the pane directory), so an agent in a subdirectory is placed in its worktree and is never counted under two worktrees.
+- **Outside worktrees**: agents whose directory is in no listed worktree are grouped in a header row at the bottom, each with its directory (`~` for home). The header cannot be selected. The group appears once the worktree list has loaded, and only while **All projects** (or single-repository mode) is selected; picking one project hides it, together with the agents of other projects' worktrees.
+- **All agents are shown**: this view ignores the persisted session scope and the stale filter.
+- **Enter** on a sub-row jumps to that agent's pane; on a worktree row it jumps to the first sub-row's agent, else to the worktree's window.
+- **Actions** (`r`, `c`, `o`, `O`, `b`, double-click, right-click menu) on a sub-row act on its parent worktree. In the outside group they do nothing and show `not in a worktree`. The `i` and `l` panel toggles work on every row; on outside rows the panels have no worktree data to show.
+- **`1`-`9`** jump to the n-th worktree row; sub-rows are not numbered.
+- **`/` filter**: a worktree row is shown when it matches or when one of its agents' titles does, and keeps all its sub-rows. Outside agents are shown when their title or directory matches.
+- The worktree row's `agent` column is not shown, whatever `worktree_columns` says.
+
+Terminal preview, input mode, diff and patch views, commit and merge triggers, kill and peek belong to the Agents view and are not available here unless `agents_tab` is enabled.
+
 ## Keybindings (Agents view)
 
 | Key      | Action                                |
@@ -79,27 +108,27 @@ Agent jumps close the dashboard by default. See [`close_on_jump`](/guide/dashboa
 
 ## Keybindings (Worktrees view)
 
-| Key      | Action                                 |
-| -------- | -------------------------------------- |
-| `1`-`9`  | Quick jump to worktree index           |
-| `Tab`    | Switch to agents view                  |
-| `Enter`  | Jump to worktree (agent or mux window) |
-| `o`      | Open PR in browser                     |
-| `O`      | Open PR checks in browser              |
-| `a`      | Add worktree                           |
-| `r`      | Remove worktree                        |
-| `c`      | Close mux window (keeps worktree)      |
-| `R`      | Sweep (bulk remove merged/gone)        |
-| `s`      | Cycle sort mode                        |
-| `p`      | Switch project                         |
-| `i`      | Toggle info panel                      |
-| `l`      | Toggle git log panel                   |
-| `/`      | Filter worktrees by name/branch        |
-| `j`/`k`  | Navigate up/down                       |
-| `T`      | Cycle theme                            |
-| `:`      | Open command palette                   |
-| `q`      | Quit                                   |
-| `Ctrl+c` | Quit (works from any view)             |
+| Key      | Action                                    |
+| -------- | ----------------------------------------- |
+| `1`-`9`  | Quick jump to worktree index              |
+| `Tab`    | Switch to agents view (`agents_tab` only) |
+| `Enter`  | Jump to worktree (agent or mux window)    |
+| `o`      | Open PR in browser                        |
+| `O`      | Open PR checks in browser                 |
+| `a`      | Add worktree                              |
+| `r`      | Remove worktree                           |
+| `c`      | Close mux window (keeps worktree)         |
+| `R`      | Sweep (bulk remove merged/gone)           |
+| `s`      | Cycle sort mode                           |
+| `p`      | Switch project                            |
+| `i`      | Toggle info panel                         |
+| `l`      | Toggle git log panel                      |
+| `/`      | Filter worktrees by name/branch           |
+| `j`/`k`  | Navigate up/down                          |
+| `T`      | Cycle theme                               |
+| `:`      | Open command palette                      |
+| `q`      | Quit                                      |
+| `Ctrl+c` | Quit (works from any view)                |
 
 Worktree jumps follow the [`close_on_jump`](/guide/dashboard/configuration/#staying-open-after-a-jump) setting.
 
