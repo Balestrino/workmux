@@ -57,11 +57,11 @@ With `dashboard.agents_tab` unset or `false` (the fork default) the dashboard sh
 
 ```text
  wm  feat-unified-view   feat/unified-view   ...
-   └ 🤖 3m  Implement docs
-   └ 💬 12m Review spec
+   └ 🤖 ⠋ 00:03:05 Implement docs
+   └ 💬 00:12:40 Review spec
  wm  primary-clone       main               ...
  Outside worktrees
-   └ ✅ 1h  Memory cleanup (~/.claude/projects/-home-tore/memory)
+   └ ✅ 01:02:11 Memory cleanup (~/.claude/projects/-home-tore/memory)
 ```
 
 - **Sub-rows** show `└`, the status icon (same icons, colours and spinner as the Agents view, including the background icon), the elapsed time and the pane title. A sub-row without a status timestamp omits the elapsed time. Stale agents are dimmed. Sub-rows are ordered waiting, working, background, done, no status; ties by most recent activity first.
@@ -69,7 +69,7 @@ With `dashboard.agents_tab` unset or `false` (the fork default) the dashboard sh
 - **Outside worktrees**: agents whose directory is in no listed worktree are grouped in a header row at the bottom, each with its directory (`~` for home). The header cannot be selected. The group appears once the worktree list has loaded, and only while **All projects** (or single-repository mode) is selected; picking one project hides it, together with the agents of other projects' worktrees.
 - **All agents are shown**: this view ignores the persisted session scope and the stale filter.
 - **Enter** on a sub-row jumps to that agent's pane; on a worktree row it jumps to the first sub-row's agent, else to the worktree's window.
-- **Actions** (`r`, `c`, `o`, `O`, `b`, double-click, right-click menu) on a sub-row act on its parent worktree. In the outside group they do nothing and show `not in a worktree`. The `i` and `l` panel toggles work on every row; on outside rows the panels have no worktree data to show.
+- **Actions** (`r`, `c`, `o`, `O`, `b`, double-click, right-click menu) on a sub-row act on its parent worktree. In the outside group the keys do nothing and show `not in a worktree`, and the right-click menu offers no actions. The `i` and `l` panel toggles work on every row; on outside rows the panels have no worktree data to show.
 - **`1`-`9`** jump to the n-th worktree row; sub-rows are not numbered.
 - **`/` filter**: a worktree row is shown when it matches or when one of its agents' titles does, and keeps all its sub-rows. Outside agents are shown when their title or directory matches.
 - The worktree row's `agent` column is not shown, whatever `worktree_columns` says.
@@ -135,7 +135,8 @@ Worktree jumps follow the [`close_on_jump`](/guide/dashboard/configuration/#stay
 ## Mouse controls
 
 The dashboard captures mouse input while it is open. Click the **Agents** and
-**Worktrees** tabs to switch views, click a table row to select it, and
+**Worktrees** tabs to switch views (the tabs exist only with
+[`agents_tab: true`](/guide/dashboard/configuration/#agents-tab)), click a table row to select it, and
 double-click a row to jump to its agent or worktree. Right-click a row to open
 its action menu, then click an action or use `j`/`k` and `Enter`. Click a footer
 command to run it. Use the mouse wheel over a table to change the selection
