@@ -89,6 +89,12 @@ Each agent contains `worktree`, `branch`, `project`, `project_path`, `status`,
 agent's Git repository cannot be resolved. With `--git`, the entry also contains
 a `git` object.
 
+`status` is `working`, `waiting` or `done`. An agent whose turn has ended while
+background work it launched is still running keeps `status: "working"` and adds
+`"background": true` (see [Background work](/guide/status-tracking/#background-work));
+the field is omitted otherwise. The table shows such an agent as
+`working (background)`.
+
 ## Safe automation
 
 Check the exit status before interpreting the JSON. Most failures produce no

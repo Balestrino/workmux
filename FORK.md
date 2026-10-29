@@ -52,6 +52,13 @@ Changes are not proposed upstream.
   worktree-targeted commands) follows that directory, so an agent started in
   `~` shows up on the worktree it `cd`s into. Resurrection still resumes in
   the pane's `workdir`, where the agent session was started.
+- **Background work status** (`status_icons.background`, default ⏳): an
+  agent whose turn has ended while a background subagent, shell command or
+  Monitor (Claude Code) or subagent (Codex) it launched is still running is
+  shown as background instead of done, everywhere the status is shown. It
+  becomes done when the last item finishes (which also fixes Codex staying
+  `working` after its last `SubagentStop`); every item expires. The stored
+  status stays `working`; `workmux status --json` adds `background: true`.
 
 Design and plan: `docs/superpowers/`.
 

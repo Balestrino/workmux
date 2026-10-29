@@ -70,7 +70,7 @@ sidebars without a restart.
 | `{git_behind}`   | Commits behind upstream as `↓N` when N greater than 0. Empty when 0 or no upstream.                                                             |
 | `{git_dirty}`    | Diff glyph when the working tree is dirty. Empty when clean.                                                                                    |
 | `{git_conflict}` | Conflict glyph when the worktree has merge conflicts. Empty otherwise.                                                                          |
-| `{status_label}` | Display name for the agent status: `Working`, `Waiting`, `Done`, or empty when no status.                                                       |
+| `{status_label}` | Display name for the agent status: `Working`, `Background`, `Waiting`, `Done`, or empty when no status.                                         |
 | `{idx}`          | 1-based position among the sidebar's agents; group headers are not counted.                                                                     |
 | `{jump_key}`     | The `M-1`..`M-9` chord label for the first nine rows. Empty for row 10 and beyond.                                                              |
 | `{fill}`         | Layout marker that splits a line into a left and right segment. At most one per line.                                                           |
@@ -262,16 +262,17 @@ clear an inherited override entirely for one agent, set its value to
 
 ## Status icons
 
-The `{status_icon}` token renders the working spinner, waiting indicator,
-done check, and sleeping indicator. Defaults depend on whether you have
-[nerdfont](/guide/configuration/) enabled:
+The `{status_icon}` token renders the working spinner, background
+indicator, waiting indicator, done check, and sleeping indicator. Defaults
+depend on whether you have [nerdfont](/guide/configuration/) enabled:
 
-| State    | Default (no nerdfont) | Default (nerdfont) |
-| -------- | --------------------- | ------------------ |
-| Working  | braille spinner       | braille spinner    |
-| Waiting  | 💬                    | nf-fa-comment      |
-| Done     | ✅                    | nf-md-check_circle |
-| Sleeping | 💤                    | nf-md-sleep        |
+| State      | Default (no nerdfont) | Default (nerdfont) |
+| ---------- | --------------------- | ------------------ |
+| Working    | braille spinner       | braille spinner    |
+| Background | ⏳                    | nf-md-timer_sand   |
+| Waiting    | 💬                    | nf-fa-comment      |
+| Done       | ✅                    | nf-md-check_circle |
+| Sleeping   | 💤                    | nf-md-sleep        |
 
 Override per state under top-level `status_icons`. Any value set here
 wins over both the emoji and nerdfont defaults, so you can mix and match.
@@ -282,6 +283,7 @@ status_icons:
   working: "🤖"
   waiting: "💬"
   done: "✅"
+  background: "⏳"
 ```
 
 ## Examples

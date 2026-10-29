@@ -335,6 +335,7 @@ status_icons:
   working: "🤖" # Agent is processing
   waiting: "💬" # Agent needs input (auto-clears on focus)
   done: "✅" # Agent finished (auto-clears on focus)
+  background: "⏳" # Turn ended, background work still running (no auto-clear)
 ```
 
 You can use tmux style codes for colored icons in both the tmux status bar and the dashboard:
