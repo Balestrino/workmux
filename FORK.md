@@ -80,11 +80,9 @@ Design and plan: `docs/superpowers/`.
 ## Installing
 
 A single binary is built from `main` and installed as `workmux`, so agent
-hooks calling `~/.local/bin/workmux` use the fork build; `workmux-ws` is kept
-as a symlink for existing sessions:
+hooks calling `~/.local/bin/workmux` use the fork build:
 
 ```bash
 cargo build --release
 install -m 755 target/release/workmux ~/.local/bin/workmux
-ln -sfn workmux ~/.local/bin/workmux-ws
 ```
