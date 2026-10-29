@@ -117,6 +117,8 @@ pub struct App {
     pub show_help: bool,
     /// Preview pane size as percentage (1-90). Higher = larger preview.
     pub preview_size: u8,
+    /// Panels open under the worktree table (closed at startup).
+    pub worktree_panels: WorktreePanels,
     /// Last jumped-to pane_id for quick toggle (cached from settings)
     last_pane_id: Option<String>,
     /// Color palette based on the configured theme
@@ -290,6 +292,7 @@ impl App {
             hide_stale,
             show_help: false,
             preview_size,
+            worktree_panels: WorktreePanels::default(),
             last_pane_id,
             palette,
             scheme,

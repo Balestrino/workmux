@@ -78,6 +78,8 @@ pub enum Action {
     ShowProjectPicker,
     ShowBaseBranchPicker,
     AddWorktree,
+    ToggleWorktreeInfo,
+    ToggleWorktreeLog,
 
     // Filter mode
     EnterFilterMode,
@@ -272,6 +274,14 @@ pub fn apply_action(app: &mut App, action: Action) -> bool {
         }
         Action::AddWorktree => {
             app.show_add_worktree();
+            false
+        }
+        Action::ToggleWorktreeInfo => {
+            app.worktree_panels.toggle_info();
+            false
+        }
+        Action::ToggleWorktreeLog => {
+            app.worktree_panels.toggle_log();
             false
         }
 
@@ -657,6 +667,16 @@ fn palette_commands(ctx: Context, app: &App) -> Vec<PaletteCommand> {
                 label: "Switch project",
                 key_hint: "p",
                 action: Action::ShowProjectPicker,
+            },
+            PaletteCommand {
+                label: "Toggle info panel",
+                key_hint: "i",
+                action: Action::ToggleWorktreeInfo,
+            },
+            PaletteCommand {
+                label: "Toggle git log panel",
+                key_hint: "l",
+                action: Action::ToggleWorktreeLog,
             },
             PaletteCommand {
                 label: "Filter worktrees",

@@ -17,7 +17,7 @@ use crate::multiplexer::AgentPane;
 use crate::multiplexer::agent::resolve_profile_for_display;
 
 use super::super::app::{App, DashboardTab};
-use super::super::layout::{dashboard_content_areas, dashboard_outer_areas};
+use super::super::layout::{dashboard_content_areas, dashboard_outer_areas, preview_visible};
 use super::format;
 use super::format::{format_git_status, format_pr_status, truncate};
 use super::theme::ThemePalette;
@@ -75,8 +75,12 @@ fn render_tab_header(f: &mut Frame, app: &App, area: Rect) {
 pub fn render_dashboard(f: &mut Frame, app: &mut App) {
     let area = f.area();
 
-    // Check if backend supports preview
-    let supports_preview = app.mux.supports_preview();
+    // Preview needs backend support; on the worktrees tab also an open panel
+    let supports_preview = preview_visible(
+        app.mux.supports_preview(),
+        app.active_tab,
+        app.worktree_panels,
+    );
 
     let outer = dashboard_outer_areas(area);
     let tab_area = outer[0];
@@ -880,6 +884,8 @@ fn render_worktree_footer_normal(f: &mut Frame, app: &App, area: Rect) {
         footer_cmd("1-9", "Jump", dimmed, bold_text),
         footer_toggle("s", "Sort", sort, true, dimmed, bold_text, active_style),
         footer_cmd("p", "Project", dimmed, bold_text),
+        footer_cmd("i", "Info", dimmed, bold_text),
+        footer_cmd("l", "Log", dimmed, bold_text),
     ];
     if !app.worktree_filter_text.is_empty() {
         items.push(footer_cmd(

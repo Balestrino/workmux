@@ -11,7 +11,7 @@ use ratatui::{
 use crate::config::WorktreeColumn;
 
 use super::super::agent;
-use super::super::app::App;
+use super::super::app::{App, WorktreePanels};
 use super::super::worktree_info::{InfoDetail, InfoEntry, InfoStatus, OrphanEntry, Tone};
 use super::format;
 use super::format::{
@@ -698,26 +698,39 @@ pub fn render_worktree_preview(f: &mut Frame, app: &mut App, area: Rect) {
         .selected()
         .and_then(|idx| app.worktrees.get(idx));
     let selected_orphan = app.selected_orphan();
+    let (info_area, log_area) = worktree_preview_areas(area, app.worktree_panels);
 
-    // Split preview area into info panel (left) and git log (right)
-    let chunks = Layout::horizontal([
-        Constraint::Length(40), // Info panel: fixed width
-        Constraint::Fill(1),    // Git log: remaining space
-    ])
-    .split(area);
-
-    if let Some(orphan) = selected_orphan {
-        render_orphan_info_panel(f, app, chunks[0], orphan);
-    } else {
-        render_info_panel(f, app, chunks[0], selected_worktree);
+    if let Some(info_area) = info_area {
+        if let Some(orphan) = selected_orphan {
+            render_orphan_info_panel(f, app, info_area, orphan);
+        } else {
+            render_info_panel(f, app, info_area, selected_worktree);
+        }
     }
-    render_git_log(
-        f,
-        app,
-        chunks[1],
-        selected_worktree,
-        selected_orphan.is_some(),
-    );
+    if let Some(log_area) = log_area {
+        render_git_log(
+            f,
+            app,
+            log_area,
+            selected_worktree,
+            selected_orphan.is_some(),
+        );
+    }
+}
+
+/// Info and git log rectangles for the open panels: side by side (info at a
+/// fixed width) when both are open, otherwise the open one takes the area.
+fn worktree_preview_areas(area: Rect, panels: WorktreePanels) -> (Option<Rect>, Option<Rect>) {
+    match (panels.info, panels.log) {
+        (true, true) => {
+            let chunks =
+                Layout::horizontal([Constraint::Length(40), Constraint::Fill(1)]).split(area);
+            (Some(chunks[0]), Some(chunks[1]))
+        }
+        (true, false) => (Some(area), None),
+        (false, true) => (None, Some(area)),
+        (false, false) => (None, None),
+    }
 }
 
 /// Title of the info panel. With workspaces configured a main checkout's
@@ -1196,6 +1209,36 @@ mod tests {
             .unwrap();
         assert_eq!(state.selected(), selected);
         terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn preview_areas_follow_open_panels() {
+        let area = Rect::new(0, 10, 120, 20);
+        let both = WorktreePanels {
+            info: true,
+            log: true,
+        };
+        assert_eq!(
+            worktree_preview_areas(area, both),
+            (
+                Some(Rect::new(0, 10, 40, 20)),
+                Some(Rect::new(40, 10, 80, 20))
+            )
+        );
+        let info = WorktreePanels {
+            info: true,
+            log: false,
+        };
+        assert_eq!(worktree_preview_areas(area, info), (Some(area), None));
+        let log = WorktreePanels {
+            info: false,
+            log: true,
+        };
+        assert_eq!(worktree_preview_areas(area, log), (None, Some(area)));
+        assert_eq!(
+            worktree_preview_areas(area, WorktreePanels::default()),
+            (None, None)
+        );
     }
 
     #[test]

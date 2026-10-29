@@ -2,6 +2,7 @@
 
 use ratatui::layout::{Constraint, Layout, Rect};
 
+use super::app::{DashboardTab, WorktreePanels};
 use crate::config::DashboardLayout;
 
 pub(super) fn dashboard_outer_areas(area: Rect) -> std::rc::Rc<[Rect]> {
@@ -11,6 +12,20 @@ pub(super) fn dashboard_outer_areas(area: Rect) -> std::rc::Rc<[Rect]> {
         Constraint::Length(1),
     ])
     .split(area)
+}
+
+/// Whether the preview area is shown: always on the agents tab, and on the
+/// worktrees tab only while at least one of its panels is open.
+pub(super) fn preview_visible(
+    supports_preview: bool,
+    tab: DashboardTab,
+    panels: WorktreePanels,
+) -> bool {
+    supports_preview
+        && match tab {
+            DashboardTab::Agents => true,
+            DashboardTab::Worktrees => panels.any(),
+        }
 }
 
 /// Return the table and optional preview rectangles, independent of tab.
@@ -44,6 +59,36 @@ pub(super) fn dashboard_content_areas(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agents_tab_always_shows_preview_when_supported() {
+        let closed = WorktreePanels::default();
+        assert!(preview_visible(true, DashboardTab::Agents, closed));
+        assert!(!preview_visible(false, DashboardTab::Agents, closed));
+    }
+
+    #[test]
+    fn worktrees_tab_shows_preview_only_with_an_open_panel() {
+        let closed = WorktreePanels::default();
+        assert!(!preview_visible(true, DashboardTab::Worktrees, closed));
+        for panels in [
+            WorktreePanels {
+                info: true,
+                log: false,
+            },
+            WorktreePanels {
+                info: false,
+                log: true,
+            },
+            WorktreePanels {
+                info: true,
+                log: true,
+            },
+        ] {
+            assert!(preview_visible(true, DashboardTab::Worktrees, panels));
+            assert!(!preview_visible(false, DashboardTab::Worktrees, panels));
+        }
+    }
 
     #[test]
     fn stacked_preserves_table_above_preview() {
