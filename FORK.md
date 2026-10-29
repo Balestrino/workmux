@@ -42,7 +42,6 @@ Changes are not proposed upstream.
   `dashboard.worktree_extra_columns`): per-worktree runtime data from an
   external command (the octolabs-worktree CLI) shown as an info panel or as
   table columns.
-
 - **Full-height worktree table**: the Worktrees tab starts with the table
   alone; `i` toggles the info panel and `l` the git log panel under it
   (upstream always shows both). Panels are closed again at every start.
