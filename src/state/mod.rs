@@ -91,21 +91,30 @@ pub fn persist_agent_update(
         event,
         true,
     );
-    // An event decides the status itself; an agent left in the background
-    // state is idle, so it does not wake a pane the user put to sleep.
-    let wakes = match resolved {
-        Some(resolved) if has_event => {
-            resolved.status == AgentStatus::Working && !resolved.background
-        }
-        _ => status == Some(AgentStatus::Working),
-    };
-    if wakes && mux.name() == "tmux" {
+    if should_wake(status, has_event, resolved) && mux.name() == "tmux" {
         let tmux = crate::multiplexer::TmuxBackend::for_socket(&mux.instance_id());
         if let Err(error) = tmux.wake_agent(pane_id) {
             warn!(%pane_id, %error, "failed to clear agent sleep state");
         }
     }
     resolved
+}
+
+/// Whether a status write clears the pane's manual sleep flag. An event
+/// decides the status itself, and an agent left in the background state is
+/// idle, so it does not wake a pane the user put to sleep. Without an event,
+/// or when nothing was stored, the passed status decides.
+fn should_wake(
+    status: Option<AgentStatus>,
+    has_event: bool,
+    resolved: Option<ResolvedStatus>,
+) -> bool {
+    match resolved {
+        Some(resolved) if has_event => {
+            resolved.status == AgentStatus::Working && !resolved.background
+        }
+        _ => status == Some(AgentStatus::Working),
+    }
 }
 
 /// Register a live agent pane without assigning it an activity status.
@@ -570,6 +579,49 @@ mod tests {
             resolve_background(Some(&existing), Some(AgentStatus::Done), None, 1000),
             (Some(AgentStatus::Done), false, vec![live_item("s1")])
         );
+        // An active turn must survive an event-less write as well.
+        existing.turn_active = true;
+        assert_eq!(
+            resolve_background(Some(&existing), Some(AgentStatus::Working), None, 1000),
+            (Some(AgentStatus::Working), true, vec![live_item("s1")])
+        );
+    }
+
+    #[test]
+    fn wake_follows_the_resolved_status_of_an_event() {
+        let resolved = |status, background| Some(ResolvedStatus { status, background });
+        let working = Some(AgentStatus::Working);
+        // No event: the passed status decides, as before.
+        assert!(should_wake(
+            working,
+            false,
+            resolved(AgentStatus::Working, true)
+        ));
+        assert!(should_wake(working, false, None));
+        assert!(!should_wake(Some(AgentStatus::Done), false, None));
+        // Event: the resolved status decides; background work is idle.
+        assert!(should_wake(
+            working,
+            true,
+            resolved(AgentStatus::Working, false)
+        ));
+        assert!(!should_wake(
+            working,
+            true,
+            resolved(AgentStatus::Working, true)
+        ));
+        assert!(!should_wake(
+            working,
+            true,
+            resolved(AgentStatus::Done, false)
+        ));
+        assert!(!should_wake(
+            working,
+            true,
+            resolved(AgentStatus::Waiting, false)
+        ));
+        // Event without a stored record: fall back to the passed status.
+        assert!(should_wake(working, true, None));
     }
 
     #[test]
