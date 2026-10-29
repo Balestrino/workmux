@@ -69,8 +69,11 @@ Changes are not proposed upstream.
   first agent, else its window; worktree actions on a sub-row act on its
   parent and show `not in a worktree` in the outside group; the `i`/`l`
   panels toggle on every row. The view ignores the session scope and
-  `hide_stale`, and hides the `agent` column. The Agents tab is only hidden:
-  `dashboard.agents_tab: true` restores the old two-tab dashboard unchanged.
+  `hide_stale` (and `--session`), and hides the `agent` column. The Agents
+  tab is only hidden: `dashboard.agents_tab: true` restores the old two-tab
+  dashboard, with one intended change: Enter on a worktree row also finds an
+  agent working in a subdirectory of it (deepest-worktree assignment instead
+  of an exact path match).
 
 Design and plan: `docs/superpowers/`.
 
