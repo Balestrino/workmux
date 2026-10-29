@@ -291,6 +291,10 @@ pub struct DashboardConfig {
     /// Default `false`: a single worktree view with agents as sub-rows.
     pub agents_tab: Option<bool>,
 
+    /// Fork-only: directories whose hook-reported `cwd` does not move an
+    /// agent (the last other directory is kept). Default: `["~/.claude"]`.
+    pub ignore_agent_dirs: Option<Vec<String>>,
+
     /// Default sort mode for the agent list: "priority", "project", "recency", "natural".
     /// Used when the dashboard has no persisted sort preference.
     /// Default: "priority"
@@ -547,6 +551,18 @@ impl DashboardConfig {
     /// Whether the separate Agents tab is shown (fork-only). Default: false.
     pub fn agents_tab(&self) -> bool {
         self.agents_tab.unwrap_or(false)
+    }
+
+    /// Directories that do not relocate an agent (fork-only), `~` expanded.
+    /// Default: `~/.claude`.
+    pub fn ignore_agent_dirs(&self) -> Vec<PathBuf> {
+        match &self.ignore_agent_dirs {
+            Some(dirs) => dirs
+                .iter()
+                .map(|dir| crate::util::expand_tilde(dir))
+                .collect(),
+            None => vec![crate::util::expand_tilde("~/.claude")],
+        }
     }
 
     /// Whether the dashboard closes after jumping to an agent or worktree.
@@ -3419,6 +3435,10 @@ impl Config {
                 .worktree_extra_columns
                 .or(self.dashboard.worktree_extra_columns),
             agents_tab: project.dashboard.agents_tab.or(self.dashboard.agents_tab),
+            ignore_agent_dirs: project
+                .dashboard
+                .ignore_agent_dirs
+                .or(self.dashboard.ignore_agent_dirs),
             sort_mode: project.dashboard.sort_mode.or(self.dashboard.sort_mode),
             close_on_jump: project
                 .dashboard
@@ -3979,6 +3999,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 #   worktree_columns: [number, project, worktree, git, pr, env, mux, age, agent]
 #   worktree_extra_columns: ["env:cpu", "env:mem", base, env_id] # inserted after env
 #   agents_tab: false              # fork-only: true shows separate Worktrees and Agents tabs
+#   ignore_agent_dirs: ["~/.claude"] # fork-only: cwds here keep the agent's last directory
 #   sort_mode: priority
 #   close_on_jump: true
 #   input_exit_key: Esc # Esc or Ctrl+<letter> (a-z)
@@ -4492,6 +4513,29 @@ mod tests {
             global.merge(Config::default()).dashboard.agent_columns(),
             vec![AgentColumn::Status, AgentColumn::Title]
         );
+    }
+
+    #[test]
+    fn ignore_agent_dirs_defaults_to_claude_home() {
+        let dirs = Config::default().dashboard.ignore_agent_dirs();
+        assert_eq!(dirs, vec![crate::util::expand_tilde("~/.claude")]);
+    }
+
+    #[test]
+    fn ignore_agent_dirs_parses_and_expands_tilde() {
+        let config: Config =
+            serde_yaml::from_str("dashboard:\n  ignore_agent_dirs: [\"~/notes\", /srv/x]\n")
+                .expect("config parses");
+        assert_eq!(
+            config.dashboard.ignore_agent_dirs(),
+            vec![
+                crate::util::expand_tilde("~/notes"),
+                std::path::PathBuf::from("/srv/x")
+            ]
+        );
+        let empty: Config =
+            serde_yaml::from_str("dashboard:\n  ignore_agent_dirs: []\n").expect("config parses");
+        assert!(empty.dashboard.ignore_agent_dirs().is_empty());
     }
 
     #[test]
