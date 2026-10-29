@@ -59,6 +59,21 @@ Changes are not proposed upstream.
   becomes done when the last item finishes (which also fixes Codex staying
   `working` after its last `SubagentStop`); every item expires. The stored
   status stays `working`; `workmux status --json` adds `background: true`.
+- **Unified worktree view** (`dashboard.agents_tab`, default `false`): the
+  dashboard is one worktree view; each worktree row is followed by sub-rows
+  (`└`, status icon, elapsed time, title) for the agents working in it, using
+  the deepest listed worktree containing the agent's directory. Agents in no
+  worktree are grouped at the bottom under "Outside worktrees" with their
+  directory (shown only once the worktree list has loaded and with no project
+  picked). Enter on a sub-row jumps to the agent, on a worktree row to its
+  first agent, else its window; worktree actions on a sub-row act on its
+  parent and show `not in a worktree` in the outside group; the `i`/`l`
+  panels toggle on every row. The view ignores the session scope and
+  `hide_stale` (and `--session`), and hides the `agent` column. The Agents
+  tab is only hidden: `dashboard.agents_tab: true` restores the old two-tab
+  dashboard, with one intended change: Enter on a worktree row also finds an
+  agent working in a subdirectory of it (deepest-worktree assignment instead
+  of an exact path match).
 
 Design and plan: `docs/superpowers/`.
 

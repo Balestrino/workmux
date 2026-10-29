@@ -22,20 +22,32 @@ The `commit` and `merge` values are text sent to the agent's pane. Use the `!` p
 
 ## Defaults
 
-| Option                   | Default value                                                | Description                                                                              |
-| ------------------------ | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| `commit`                 | `Commit staged changes with a descriptive message`           | Natural language prompt                                                                  |
-| `merge`                  | `!workmux merge`                                             | Shell command via agent                                                                  |
-| `layout`                 | `stacked`                                                    | `stacked` (table above preview) or `side_by_side` (preview left, table right)            |
-| `preview_size`           | `60`                                                         | Preview height or width as percentage (10-90)                                            |
+| Option                   | Default value                                                      | Description                                                                              |
+| ------------------------ | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
+| `commit`                 | `Commit staged changes with a descriptive message`                 | Natural language prompt                                                                  |
+| `merge`                  | `!workmux merge`                                                   | Shell command via agent                                                                  |
+| `layout`                 | `stacked`                                                          | `stacked` (table above preview) or `side_by_side` (preview left, table right)            |
+| `preview_size`           | `60`                                                               | Preview height or width as percentage (10-90)                                            |
 | `agent_columns`          | `[number, agent, project, worktree, git, pr, status, time, title]` | Agents table columns, in display order                                                   |
-| `worktree_columns`       | `[number, project, worktree, git, pr, env, mux, age, agent]` | Worktree table columns, in display order                                                 |
-| `worktree_extra_columns` | unset                                                        | Opt-in worktree columns inserted after `env` (see [worktree columns](#worktree-columns)) |
-| `workspaces`             | unset                                                        | Show every git repository one or two levels below these directories (global config only) |
-| `worktree_info_command`  | unset                                                        | Command printing per-worktree environment info as JSON (global config only)              |
-| `worktree_info_interval` | `15`                                                         | Seconds between runs of the info command, minimum `2` (global config only)               |
-| `close_on_jump`          | `true`                                                       | Close the dashboard after a jump                                                         |
-| `input_exit_key`         | `Esc`                                                        | Key to exit input mode (`Esc` or `Ctrl+<letter>`)                                        |
+| `worktree_columns`       | `[number, project, worktree, git, pr, env, mux, age, agent]`       | Worktree table columns, in display order                                                 |
+| `worktree_extra_columns` | unset                                                              | Opt-in worktree columns inserted after `env` (see [worktree columns](#worktree-columns)) |
+| `workspaces`             | unset                                                              | Show every git repository one or two levels below these directories (global config only) |
+| `worktree_info_command`  | unset                                                              | Command printing per-worktree environment info as JSON (global config only)              |
+| `worktree_info_interval` | `15`                                                               | Seconds between runs of the info command, minimum `2` (global config only)               |
+| `agents_tab`             | `false`                                                            | Fork only: show the Agents tab (`true` restores the two-tab dashboard)                   |
+| `close_on_jump`          | `true`                                                             | Close the dashboard after a jump                                                         |
+| `input_exit_key`         | `Esc`                                                              | Key to exit input mode (`Esc` or `Ctrl+<letter>`)                                        |
+
+## Agents tab
+
+Fork only. By default (`agents_tab: false`) the dashboard is a single worktree view with agents shown as sub-rows under their worktree (see [Unified worktree view](/guide/dashboard/#unified-worktree-view)): the Agents tab is hidden, `--tab agents` is ignored, `Tab` is removed from the footer, help and command palette, and the `agent` worktree column is replaced by the sub-rows. The unified view ignores the persisted session scope and the stale filter.
+
+```yaml
+dashboard:
+  agents_tab: true
+```
+
+With `true` the dashboard behaves as upstream: two tabs, no sub-rows, `agent` column per `worktree_columns`. Upstream workmux ignores this key, so the shared config file stays valid.
 
 ## Input mode exit key
 
@@ -137,7 +149,8 @@ The opt-in columns can also be listed in `worktree_extra_columns`, which inserts
 
 ```yaml
 dashboard:
-  worktree_extra_columns: ["env:cpu", "env:mem", "env:disk", base, env_id, "env:console"]
+  worktree_extra_columns:
+    ["env:cpu", "env:mem", "env:disk", base, env_id, "env:console"]
 ```
 
 `workspaces`, `worktree_info_command`, and `worktree_info_interval` are read only from the global config (`~/.config/workmux/config.yaml`). Setting them in a project's `.workmux.yaml` logs a warning and is ignored.

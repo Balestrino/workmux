@@ -23,26 +23,50 @@ use super::format::{format_git_status, format_pr_status, truncate};
 use super::theme::ThemePalette;
 use super::worktree::{render_worktree_preview, render_worktree_table};
 
-/// Render the tab header line showing Agents | Worktrees with active tab highlighted.
-fn render_tab_header(f: &mut Frame, app: &App, area: Rect) {
+/// Tab header: `Agents │ Worktrees` with the active tab highlighted, or
+/// only `Worktrees` in the unified view (no Agents tab).
+fn tab_header_spans(
+    active: DashboardTab,
+    unified: bool,
+    palette: &ThemePalette,
+) -> Vec<Span<'static>> {
     let active_style = Style::default()
-        .fg(app.palette.header)
+        .fg(palette.header)
         .add_modifier(Modifier::BOLD);
-    let inactive_style = Style::default().fg(app.palette.dimmed);
-    let pipe_style = Style::default().fg(app.palette.border);
-    let rule_style = Style::default().fg(app.palette.border);
+    let inactive_style = Style::default().fg(palette.dimmed);
+    let pipe_style = Style::default().fg(palette.border);
 
-    let (agents_style, worktrees_style) = match app.active_tab {
+    if unified {
+        return vec![Span::raw("  "), Span::styled("Worktrees", active_style)];
+    }
+    let (agents_style, worktrees_style) = match active {
         DashboardTab::Agents => (active_style, inactive_style),
         DashboardTab::Worktrees => (inactive_style, active_style),
     };
-
-    let tabs_spans = vec![
+    vec![
         Span::raw("  "),
         Span::styled("Agents", agents_style),
         Span::styled(" \u{2502} ", pipe_style),
         Span::styled("Worktrees", worktrees_style),
-    ];
+    ]
+}
+
+/// Pane title as the Agents tab shows it (OpenCode prefix and `... ` removed).
+pub(super) fn agent_title(agent: &AgentPane) -> String {
+    agent
+        .pane_title
+        .as_ref()
+        .map(|t| {
+            let t = strip_oc_title_prefix(t);
+            t.strip_prefix("... ").unwrap_or(t).to_string()
+        })
+        .unwrap_or_default()
+}
+
+/// Render the tab header line showing Agents | Worktrees with active tab highlighted.
+fn render_tab_header(f: &mut Frame, app: &App, area: Rect) {
+    let rule_style = Style::default().fg(app.palette.border);
+    let tabs_spans = tab_header_spans(app.active_tab, app.unified, &app.palette);
     let rule = Line::from(Span::styled(
         "\u{2500}".repeat(area.width as usize),
         rule_style,
@@ -457,14 +481,7 @@ fn render_table(f: &mut Frame, app: &mut App, area: Rect) {
                 25usize.saturating_sub(pane_suffix.chars().count()),
             );
             let worktree_suffix = pane_suffix;
-            let title = agent
-                .pane_title
-                .as_ref()
-                .map(|t| {
-                    let t = strip_oc_title_prefix(t);
-                    t.strip_prefix("... ").unwrap_or(t).to_string()
-                })
-                .unwrap_or_default();
+            let title = agent_title(agent);
             let status_spans = app.get_status_display(agent);
             let elapsed = app.get_elapsed(agent);
             let duration = elapsed
@@ -864,16 +881,18 @@ fn render_worktree_footer_filter<'a>(app: &'a App) -> Paragraph<'a> {
     render_footer_filter_mode(app, app.worktree_filter_text.as_str())
 }
 
-/// Worktree normal mode footer
-fn render_worktree_footer_normal(f: &mut Frame, app: &App, area: Rect) {
-    let p = &app.palette;
-
-    let dimmed = Style::default().fg(p.dimmed);
-    let bold_text = Style::default().fg(p.text).add_modifier(Modifier::BOLD);
-    let pipe_style = Style::default().fg(p.border);
-    let active_style = Style::default().fg(p.accent);
-
-    let sort = app.worktree_sort_mode.label();
+/// Worktree normal mode footer items; no Tab entry in the unified view.
+fn worktree_footer_entries(
+    sort: &str,
+    filter: &str,
+    unified: bool,
+    palette: &ThemePalette,
+) -> Vec<Vec<Span<'static>>> {
+    let dimmed = Style::default().fg(palette.dimmed);
+    let bold_text = Style::default()
+        .fg(palette.text)
+        .add_modifier(Modifier::BOLD);
+    let active_style = Style::default().fg(palette.accent);
 
     let mut items: Vec<Vec<Span<'static>>> = vec![
         footer_cmd("a", "Add", dimmed, bold_text),
@@ -887,17 +906,30 @@ fn render_worktree_footer_normal(f: &mut Frame, app: &App, area: Rect) {
         footer_cmd("i", "Info", dimmed, bold_text),
         footer_cmd("l", "Log", dimmed, bold_text),
     ];
-    if !app.worktree_filter_text.is_empty() {
-        items.push(footer_cmd(
-            "/",
-            &app.worktree_filter_text,
-            dimmed,
-            bold_text,
-        ));
+    if !filter.is_empty() {
+        items.push(footer_cmd("/", filter, dimmed, bold_text));
     }
-    items.push(footer_cmd("Tab", "Agents", dimmed, bold_text));
+    if !unified {
+        items.push(footer_cmd("Tab", "Agents", dimmed, bold_text));
+    }
     items.push(footer_cmd("q", "Quit", dimmed, bold_text));
+    items
+}
 
+/// Worktree normal mode footer
+fn render_worktree_footer_normal(f: &mut Frame, app: &App, area: Rect) {
+    let p = &app.palette;
+
+    let dimmed = Style::default().fg(p.dimmed);
+    let bold_text = Style::default().fg(p.text).add_modifier(Modifier::BOLD);
+    let pipe_style = Style::default().fg(p.border);
+
+    let items = worktree_footer_entries(
+        app.worktree_sort_mode.label(),
+        &app.worktree_filter_text,
+        app.unified,
+        p,
+    );
     render_pinned_footer(f, area, &items, dimmed, bold_text, pipe_style);
 }
 
@@ -1202,5 +1234,51 @@ mod tests {
             render_line(&[AgentColumn::Number, AgentColumn::Agent], 1),
             "1  Codex"
         );
+    }
+
+    fn spans_text(spans: &[Span]) -> String {
+        spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn agents_tab_mode_keeps_tab_header_and_agent_column() {
+        let palette = palette();
+        let header = spans_text(&tab_header_spans(DashboardTab::Worktrees, false, &palette));
+        assert!(header.contains("Agents"), "{header:?}");
+        assert!(header.contains("Worktrees"), "{header:?}");
+        let columns = super::super::worktree::visible_columns(
+            &crate::config::DEFAULT_WORKTREE_COLUMNS,
+            true,
+            false,
+            false,
+        );
+        assert!(columns.contains(&crate::config::WorktreeColumn::Agent));
+        let footer: Vec<String> = worktree_footer_entries("age", "", false, &palette)
+            .iter()
+            .map(|item| spans_text(item))
+            .collect();
+        assert!(footer.contains(&"Tab Agents".to_string()), "{footer:?}");
+    }
+
+    #[test]
+    fn unified_tab_header_shows_only_worktrees() {
+        let palette = palette();
+        let header = spans_text(&tab_header_spans(DashboardTab::Worktrees, true, &palette));
+        assert_eq!(header, "  Worktrees");
+    }
+
+    #[test]
+    fn worktree_footer_line_has_no_tab_in_unified_mode() {
+        let palette = palette();
+        let footer: Vec<String> = worktree_footer_entries("age", "fork", true, &palette)
+            .iter()
+            .map(|item| spans_text(item))
+            .collect();
+        assert!(
+            !footer.iter().any(|item| item.starts_with("Tab")),
+            "{footer:?}"
+        );
+        assert!(footer.contains(&"/ fork".to_string()), "{footer:?}");
+        assert_eq!(footer.last().map(String::as_str), Some("q Quit"));
     }
 }

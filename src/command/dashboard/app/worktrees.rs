@@ -10,13 +10,14 @@ use std::time::Duration;
 use anyhow::Context as _;
 
 use crate::git;
-use crate::multiplexer::Multiplexer;
+use crate::multiplexer::{AgentPane, Multiplexer};
 use crate::util::canon_or_self;
 use crate::workflow;
 use crate::workspaces::{self, WorkspaceRepo};
 
 use super::super::agent;
 use super::super::sort::WorktreeSortMode;
+use super::super::unified::{self, DisplayRow, RowInputs};
 use super::super::worktree_info::{self, OrphanEntry};
 use super::App;
 use super::types::*;
@@ -350,36 +351,235 @@ fn run_add_worktree_job(
     }
 }
 
-/// What a table row index refers to: a listed worktree, an orphan row after
-/// them, or nothing.
-#[derive(Debug, PartialEq, Eq)]
-enum RowKind {
-    Worktree(usize),
-    Orphan(usize),
-    None,
+/// Status message for a worktree action on an agent outside every worktree.
+const NOT_IN_WORKTREE: &str = "not in a worktree";
+
+/// Which worktree fetch the view waits for, and whether it has completed.
+/// A project switch starts a new generation: a fetch spawned before it
+/// lists the old project and is ignored.
+#[derive(Debug, Default)]
+pub(super) struct WorktreeLoad {
+    generation: u64,
+    loaded: bool,
 }
 
-fn row_kind(index: usize, worktree_len: usize, orphan_len: usize) -> RowKind {
-    if index < worktree_len {
-        RowKind::Worktree(index)
-    } else if index - worktree_len < orphan_len {
-        RowKind::Orphan(index - worktree_len)
-    } else {
-        RowKind::None
+impl WorktreeLoad {
+    /// Generation reported by a fetch spawned now.
+    pub(super) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// A project switch: wait for a fetch spawned after it.
+    pub(super) fn restart(&mut self) {
+        self.generation += 1;
+        self.loaded = false;
+    }
+
+    /// A fetch of `generation` completed, with a list or failing. True when
+    /// it is current; the view then counts as loaded.
+    pub(super) fn complete(&mut self, generation: u64) -> bool {
+        if generation != self.generation {
+            return false;
+        }
+        self.loaded = true;
+        true
+    }
+
+    /// A list (possibly empty) has arrived for the current selection.
+    pub(super) fn loaded(&self) -> bool {
+        self.loaded
     }
 }
 
-fn wrap_next(current: usize, count: usize) -> usize {
-    if current + 1 >= count { 0 } else { current + 1 }
+/// Event a finished worktree fetch sends: the list, or `WorktreeListFailed`
+/// so the view still counts as loaded (e.g. started outside a repository
+/// with no workspaces configured).
+fn fetch_result_event(
+    generation: u64,
+    worktrees: Option<Vec<workflow::types::WorktreeInfo>>,
+    names: impl FnOnce() -> HashMap<PathBuf, String>,
+) -> AppEvent {
+    match worktrees {
+        Some(worktrees) => AppEvent::WorktreeList(generation, worktrees, names()),
+        None => AppEvent::WorktreeListFailed(generation),
+    }
 }
 
-fn wrap_prev(current: usize, count: usize) -> usize {
-    if current == 0 { count - 1 } else { current - 1 }
+/// Whether `refresh()` rebuilds the unified rows: not while the list of a
+/// (new) project selection is pending, or stale rows would take the
+/// selection.
+pub(super) fn refresh_rebuilds_rows(unified_view: bool, load: &WorktreeLoad) -> bool {
+    unified_view && load.loaded()
 }
 
-/// Keyboard jump numbers address real worktree rows only.
-fn jump_target(index: usize, worktree_len: usize) -> Option<usize> {
-    (index < worktree_len).then_some(index)
+/// Forget the previous project's lists on a project switch, so none of its
+/// rows stays selectable until the new list arrives.
+fn clear_project_lists(
+    worktrees: &mut Vec<workflow::types::WorktreeInfo>,
+    all_worktrees: &mut Vec<workflow::types::WorktreeInfo>,
+    orphans: &mut Vec<OrphanEntry>,
+    load: &mut WorktreeLoad,
+) {
+    worktrees.clear();
+    all_worktrees.clear();
+    orphans.clear();
+    load.restart();
+}
+
+/// Rows of the Worktrees table. Without the unified view: the worktrees
+/// then the orphans, as upstream.
+fn display_rows_for(unified_view: bool, inputs: &RowInputs) -> Vec<DisplayRow> {
+    if unified_view {
+        return unified::build_display_rows(inputs);
+    }
+    (0..inputs.visible_worktrees.len())
+        .map(DisplayRow::Worktree)
+        .chain((0..inputs.orphan_count).map(DisplayRow::Orphan))
+        .collect()
+}
+
+/// The worktree a row stands for: its own, or an agent sub-row's parent.
+fn worktree_index_of(row: &DisplayRow) -> Option<usize> {
+    match row {
+        DisplayRow::Worktree(i)
+        | DisplayRow::Agent {
+            parent: Some(i), ..
+        } => Some(*i),
+        _ => None,
+    }
+}
+
+/// An agent sub-row of the "Outside worktrees" group.
+fn is_outside_agent(row: &DisplayRow) -> bool {
+    matches!(row, DisplayRow::Agent { parent: None, .. })
+}
+
+fn first_selectable(rows: &[DisplayRow]) -> Option<usize> {
+    rows.iter().position(unified::is_selectable)
+}
+
+/// Next (or previous) selectable row after `current`, wrapping around and
+/// skipping the group header. Nothing selected counts as row 0.
+fn step_selectable(rows: &[DisplayRow], current: Option<usize>, forward: bool) -> Option<usize> {
+    let count = rows.len();
+    if count == 0 {
+        return None;
+    }
+    let mut i = current.unwrap_or(0).min(count - 1);
+    for _ in 0..count {
+        i = if forward {
+            (i + 1) % count
+        } else {
+            (i + count - 1) % count
+        };
+        if unified::is_selectable(&rows[i]) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Index of the `n`-th worktree row (0-based); agent sub-rows, orphans and
+/// the header have no jump number.
+fn nth_worktree_row(rows: &[DisplayRow], n: usize) -> Option<usize> {
+    rows.iter()
+        .enumerate()
+        .filter(|(_, r)| matches!(r, DisplayRow::Worktree(_)))
+        .nth(n)
+        .map(|(i, _)| i)
+}
+
+/// Where the selection goes after the rows were rebuilt.
+#[derive(Debug, PartialEq, Eq)]
+enum Restored {
+    /// The selected agent (or, failing that, the selected path) is at this row.
+    Found(usize),
+    /// The selected row is gone: the first selectable row, if any.
+    Lost(Option<usize>),
+    /// Nothing was selected by identity.
+    NoIdentity,
+}
+
+/// Find the previous selection in `rows`: by pane id for an agent sub-row,
+/// then by path (`path_match`) for worktree and orphan rows.
+fn restore_row(
+    rows: &[DisplayRow],
+    agent: Option<&str>,
+    path_match: Option<&dyn Fn(&DisplayRow) -> bool>,
+) -> Restored {
+    if let Some(id) = agent
+        && let Some(i) = rows
+            .iter()
+            .position(|r| matches!(r, DisplayRow::Agent { pane_id, .. } if pane_id == id))
+    {
+        return Restored::Found(i);
+    }
+    if let Some(matches) = path_match
+        && let Some(i) = rows.iter().position(|r| {
+            matches!(r, DisplayRow::Worktree(_) | DisplayRow::Orphan(_)) && matches(r)
+        })
+    {
+        return Restored::Found(i);
+    }
+    if agent.is_some() || path_match.is_some() {
+        Restored::Lost(first_selectable(rows))
+    } else {
+        Restored::NoIdentity
+    }
+}
+
+/// What Enter on a row jumps to.
+#[derive(Debug, PartialEq, Eq)]
+enum EnterTarget {
+    /// An agent's pane.
+    Pane(String),
+    /// The worktree's own window or session (the existing open logic).
+    Worktree(usize),
+}
+
+/// Enter on an agent sub-row targets its pane; on a worktree row, its first
+/// sub-row's pane, else the worktree itself. Orphans and the header: nothing.
+fn enter_target(rows: &[DisplayRow], selected: usize) -> Option<EnterTarget> {
+    match rows.get(selected)? {
+        DisplayRow::Agent { pane_id, .. } => Some(EnterTarget::Pane(pane_id.clone())),
+        DisplayRow::Worktree(i) => match rows.get(selected + 1) {
+            Some(DisplayRow::Agent {
+                pane_id,
+                parent: Some(parent),
+            }) if parent == i => Some(EnterTarget::Pane(pane_id.clone())),
+            _ => Some(EnterTarget::Worktree(*i)),
+        },
+        DisplayRow::Orphan(_) | DisplayRow::OutsideHeader => None,
+    }
+}
+
+/// First agent (in list order) assigned to `worktree` among `all_worktrees`
+/// (deepest ancestor-or-equal), so agents in a subdirectory are found too.
+fn first_agent_in_worktree(
+    worktree: &Path,
+    all_worktrees: &[PathBuf],
+    agents: &[AgentPane],
+) -> Option<String> {
+    let target = canon_or_self(worktree);
+    let index = all_worktrees
+        .iter()
+        .position(|p| canon_or_self(p) == target)?;
+    unified::assign_agents(all_worktrees, agents)
+        .iter()
+        .zip(agents)
+        .find(|(a, _)| **a == Some(index))
+        .map(|(_, agent)| agent.pane_id.clone())
+}
+
+/// Tab after a Tab press: the unified view has no Agents tab.
+fn next_tab(current: DashboardTab, unified_view: bool) -> DashboardTab {
+    if unified_view {
+        return DashboardTab::Worktrees;
+    }
+    match current {
+        DashboardTab::Agents => DashboardTab::Worktrees,
+        DashboardTab::Worktrees => DashboardTab::Agents,
+    }
 }
 
 /// Footer message for a row action whose repository config failed to load.
@@ -494,12 +694,13 @@ impl App {
         self.last_worktree_fetch = std::time::Instant::now() - Duration::from_secs(60);
     }
 
-    /// Switch between Agents and Worktrees tabs
+    /// Switch between Agents and Worktrees tabs (no-op in the unified view)
     pub fn switch_tab(&mut self) {
-        self.active_tab = match self.active_tab {
-            DashboardTab::Agents => DashboardTab::Worktrees,
-            DashboardTab::Worktrees => DashboardTab::Agents,
-        };
+        let next = next_tab(self.active_tab, self.unified);
+        if next == self.active_tab {
+            return;
+        }
+        self.active_tab = next;
         if self.active_tab == DashboardTab::Worktrees {
             // Trigger immediate fetch on switch
             self.last_worktree_fetch = std::time::Instant::now();
@@ -580,6 +781,7 @@ impl App {
             .map(|(_, p)| p.clone());
         let workspace_dirs = self.config.dashboard.workspaces();
         let agent_roots: Vec<PathBuf> = self.repo_roots.values().cloned().collect();
+        let generation = self.worktree_load.generation();
 
         std::thread::spawn(move || {
             struct ResetFlag(Arc<AtomicBool>);
@@ -599,10 +801,10 @@ impl App {
                 let roots = fetch_roots(&repos, &agent_roots);
                 Some(list_all_repos(&config, mux.as_ref(), &roots))
             };
-            if let Some(worktrees) = worktrees {
-                let names = fetched_project_names(&workspace_dirs, &agent_roots);
-                let _ = tx.send(AppEvent::WorktreeList(worktrees, names));
-            }
+            let event = fetch_result_event(generation, worktrees, || {
+                fetched_project_names(&workspace_dirs, &agent_roots)
+            });
+            let _ = tx.send(event);
         });
     }
 
@@ -671,12 +873,27 @@ impl App {
         // (workflow::list is called with fetch_pr_status=false to avoid spinner)
         merge_worktree_prs(&mut self.worktrees, &self.pr_statuses);
 
-        // Apply name filter
+        // Unified view: assign agents against every listed worktree once,
+        // for both the filter and the rows.
+        let (all_paths, assignment) = self.agent_assignment();
+
+        // Apply name filter (unified view: or an agent title of the worktree)
         if !self.worktree_filter_text.is_empty() {
             let filter = self.worktree_filter_text.to_lowercase();
+            let by_agent = if self.unified {
+                unified::worktrees_visible_by_agent(&assignment, &self.host_agents, &filter)
+            } else {
+                HashSet::new()
+            };
+            // `worktrees` is still `all_worktrees` in order: index = position.
+            let mut index = 0;
             self.worktrees.retain(|w| {
+                let i = index;
+                index += 1;
                 let handle = w.handle.to_lowercase();
-                handle.contains(&filter) || w.branch.to_lowercase().contains(&filter)
+                handle.contains(&filter)
+                    || w.branch.to_lowercase().contains(&filter)
+                    || by_agent.contains(&i)
             });
         }
 
@@ -691,85 +908,222 @@ impl App {
             &self.worktree_filter_text,
         );
 
-        // Restore selection by path (orphan rows follow the real rows)
-        if let Some(ref path) = self.selected_worktree_path {
-            let orphan_idx = self.visible_orphans.iter().position(|o| &o.path == path);
-            if let Some(idx) = self.worktrees.iter().position(|w| &w.path == path) {
-                self.worktree_table_state.select(Some(idx));
-            } else if let Some(idx) = orphan_idx {
-                self.worktree_table_state
-                    .select(Some(self.worktrees.len() + idx));
-            } else {
-                self.selected_worktree_path = None;
-                if self.worktree_row_count() == 0 {
-                    self.worktree_table_state.select(None);
-                } else {
-                    self.worktree_table_state.select(Some(0));
-                }
-            }
-        } else if self.worktree_row_count() > 0 && self.worktree_table_state.selected().is_none() {
-            self.worktree_table_state.select(Some(0));
-            self.selected_worktree_path = self.row_path(0);
-        }
+        self.rebuild_display_rows_with(&all_paths, &assignment);
 
         self.update_worktree_preview();
     }
 
-    /// Number of selectable rows: the listed worktrees plus the orphan rows.
+    /// Paths of every listed worktree and, in the unified view, the agent
+    /// assignment against them (empty otherwise). Touches the filesystem:
+    /// call it when rebuilding rows, not per frame.
+    fn agent_assignment(&self) -> (Vec<PathBuf>, Vec<Option<usize>>) {
+        if !self.unified {
+            return (Vec::new(), Vec::new());
+        }
+        let all: Vec<PathBuf> = self.all_worktrees.iter().map(|w| w.path.clone()).collect();
+        let assignment = unified::assign_agents(&all, &self.host_agents);
+        (all, assignment)
+    }
+
+    fn compute_display_rows(
+        &self,
+        all_paths: &[PathBuf],
+        assignment: &[Option<usize>],
+    ) -> Vec<DisplayRow> {
+        let visible: Vec<PathBuf> = self.worktrees.iter().map(|w| w.path.clone()).collect();
+        let home = home::home_dir();
+        display_rows_for(
+            self.unified,
+            &RowInputs {
+                visible_worktrees: &visible,
+                all_worktrees: all_paths,
+                agents: if self.unified { &self.host_agents } else { &[] },
+                assignment,
+                orphan_count: self.visible_orphans.len(),
+                filter: &self.worktree_filter_text,
+                outside_group: self.worktree_project_override.is_none()
+                    && self.worktree_load.loaded(),
+                home: home.as_deref(),
+            },
+        )
+    }
+
+    /// Rebuild the Worktrees table rows from the current worktrees, orphans
+    /// and agents, and restore the selection.
+    pub(super) fn rebuild_display_rows(&mut self) {
+        let (all_paths, assignment) = self.agent_assignment();
+        self.rebuild_display_rows_with(&all_paths, &assignment);
+    }
+
+    fn rebuild_display_rows_with(&mut self, all_paths: &[PathBuf], assignment: &[Option<usize>]) {
+        self.display_rows = self.compute_display_rows(all_paths, assignment);
+        self.restore_worktree_selection();
+    }
+
+    /// Restore the selection after a rebuild: by pane id for an agent
+    /// sub-row, by path for worktree and orphan rows, else the first
+    /// selectable row.
+    fn restore_worktree_selection(&mut self) {
+        let (worktrees, orphans) = (&self.worktrees, &self.visible_orphans);
+        let path_match = self.selected_worktree_path.as_ref().map(|path| {
+            move |row: &DisplayRow| match row {
+                DisplayRow::Worktree(i) => worktrees.get(*i).is_some_and(|w| &w.path == path),
+                DisplayRow::Orphan(i) => orphans.get(*i).is_some_and(|o| &o.path == path),
+                _ => false,
+            }
+        });
+        let restored = restore_row(
+            &self.display_rows,
+            self.selected_agent_pane.as_deref(),
+            path_match
+                .as_ref()
+                .map(|m| m as &dyn Fn(&DisplayRow) -> bool),
+        );
+        match restored {
+            Restored::Found(index) => {
+                self.worktree_table_state.select(Some(index));
+                self.set_selection_identity(index);
+            }
+            Restored::Lost(index) => {
+                self.worktree_table_state.select(index);
+                match index {
+                    // Unified rows reorder as agents change: follow the new row.
+                    Some(index) if self.unified => self.set_selection_identity(index),
+                    // Upstream: keep the index, forget the identity.
+                    _ => {
+                        self.selected_worktree_path = None;
+                        self.selected_agent_pane = None;
+                    }
+                }
+            }
+            Restored::NoIdentity => match self.worktree_table_state.selected() {
+                None => {
+                    if let Some(index) = first_selectable(&self.display_rows) {
+                        self.worktree_table_state.select(Some(index));
+                        self.set_selection_identity(index);
+                    }
+                }
+                // Keep the index while it is still a selectable row.
+                Some(index)
+                    if self
+                        .display_rows
+                        .get(index)
+                        .is_some_and(unified::is_selectable) => {}
+                Some(_) => self
+                    .worktree_table_state
+                    .select(first_selectable(&self.display_rows)),
+            },
+        }
+    }
+
+    /// Remember what the row at `index` is, to find it again after a rebuild.
+    fn set_selection_identity(&mut self, index: usize) {
+        let row = self.display_rows.get(index);
+        self.selected_agent_pane = match row {
+            Some(DisplayRow::Agent { pane_id, .. }) => Some(pane_id.clone()),
+            _ => None,
+        };
+        // An agent sub-row falls back to its parent worktree.
+        self.selected_worktree_path = match row {
+            Some(DisplayRow::Orphan(i)) => self.visible_orphans.get(*i).map(|o| o.path.clone()),
+            Some(row) => worktree_index_of(row)
+                .and_then(|i| self.worktrees.get(i))
+                .map(|w| w.path.clone()),
+            None => None,
+        };
+    }
+
+    /// Number of table rows (selectable or not): `display_rows`.
     pub fn worktree_row_count(&self) -> usize {
-        self.worktrees.len() + self.visible_orphans.len()
+        self.display_rows.len()
+    }
+
+    /// The row under the selection.
+    pub fn selected_row(&self) -> Option<&DisplayRow> {
+        self.display_rows.get(self.worktree_table_state.selected()?)
+    }
+
+    /// The worktree the selection stands for: a worktree row, or the parent
+    /// of an agent sub-row. `None` on orphans, outside-group agents and the
+    /// header.
+    pub fn selected_worktree_index(&self) -> Option<usize> {
+        self.selected_row().and_then(worktree_index_of)
+    }
+
+    /// The worktree the selection stands for, if it is still listed.
+    pub fn selected_worktree(&self) -> Option<&workflow::types::WorktreeInfo> {
+        self.worktrees.get(self.selected_worktree_index()?)
+    }
+
+    /// The worktree a row action targets. On an agent outside every
+    /// worktree, shows "not in a worktree" and returns `None`.
+    fn action_worktree_index(&mut self) -> Option<usize> {
+        if self.outside_agent_blocked() {
+            return None;
+        }
+        self.selected_worktree_index()
+            .filter(|&i| i < self.worktrees.len())
+    }
+
+    /// True, with the "not in a worktree" message, when the selection is an
+    /// agent outside every worktree (worktree actions do nothing there).
+    pub(super) fn outside_agent_blocked(&mut self) -> bool {
+        if self.selected_row().is_some_and(is_outside_agent) {
+            self.status_message = Some((NOT_IN_WORKTREE.to_string(), std::time::Instant::now()));
+            return true;
+        }
+        false
     }
 
     /// The orphan row under the selection, if the selection is on one.
     pub fn selected_orphan(&self) -> Option<&OrphanEntry> {
-        let selected = self.worktree_table_state.selected()?;
-        match row_kind(selected, self.worktrees.len(), self.visible_orphans.len()) {
-            RowKind::Orphan(i) => self.visible_orphans.get(i),
+        match self.selected_row()? {
+            DisplayRow::Orphan(i) => self.visible_orphans.get(*i),
             _ => None,
         }
     }
 
     /// Path identifying the row at `index` (worktree or orphan).
     pub fn row_path(&self, index: usize) -> Option<PathBuf> {
-        match row_kind(index, self.worktrees.len(), self.visible_orphans.len()) {
-            RowKind::Worktree(i) => self.worktrees.get(i).map(|w| w.path.clone()),
-            RowKind::Orphan(i) => self.visible_orphans.get(i).map(|o| o.path.clone()),
-            RowKind::None => None,
+        match self.display_rows.get(index)? {
+            DisplayRow::Worktree(i) => self.worktrees.get(*i).map(|w| w.path.clone()),
+            DisplayRow::Orphan(i) => self.visible_orphans.get(*i).map(|o| o.path.clone()),
+            DisplayRow::Agent { .. } | DisplayRow::OutsideHeader => None,
         }
     }
 
     pub fn select_worktree(&mut self, index: usize) {
-        if index >= self.worktree_row_count() {
+        if !self
+            .display_rows
+            .get(index)
+            .is_some_and(unified::is_selectable)
+        {
             return;
         }
         self.worktree_table_state.select(Some(index));
-        self.selected_worktree_path = self.row_path(index);
+        self.set_selection_identity(index);
         self.update_worktree_preview();
     }
 
     pub fn worktree_next(&mut self) {
-        let count = self.worktree_row_count();
-        if count == 0 {
-            return;
+        let current = self.worktree_table_state.selected();
+        if let Some(index) = step_selectable(&self.display_rows, current, true) {
+            self.select_worktree(index);
         }
-        let i = self.worktree_table_state.selected().unwrap_or(0);
-        self.select_worktree(wrap_next(i, count));
     }
 
     pub fn worktree_previous(&mut self) {
-        let count = self.worktree_row_count();
-        if count == 0 {
-            return;
+        let current = self.worktree_table_state.selected();
+        if let Some(index) = step_selectable(&self.display_rows, current, false) {
+            self.select_worktree(index);
         }
-        let i = self.worktree_table_state.selected().unwrap_or(0);
-        self.select_worktree(wrap_prev(i, count));
     }
 
-    /// Jump to the worktree at `index`. Only real rows have jump numbers.
+    /// Jump to the `index`-th worktree row. Only worktree rows have jump numbers.
     pub fn worktree_jump_to_index(&mut self, index: usize) {
-        if let Some(index) = jump_target(index, self.worktrees.len()) {
+        if let Some(index) = nth_worktree_row(&self.display_rows, index) {
             self.worktree_table_state.select(Some(index));
-            self.selected_worktree_path = self.worktrees.get(index).map(|w| w.path.clone());
+            self.set_selection_identity(index);
             self.jump_to_selected_worktree();
         }
     }
@@ -781,7 +1135,7 @@ impl App {
     pub fn remove_selected_worktree(&mut self) {
         let worktree = match self.active_tab {
             DashboardTab::Worktrees => {
-                let Some(selected) = self.worktree_table_state.selected() else {
+                let Some(selected) = self.action_worktree_index() else {
                     return;
                 };
                 self.worktrees.get(selected).cloned()
@@ -895,7 +1249,7 @@ impl App {
 
     /// Close the mux window/session for the selected worktree without removing it.
     pub fn close_selected_worktree_window(&mut self) {
-        let Some(selected) = self.worktree_table_state.selected() else {
+        let Some(selected) = self.action_worktree_index() else {
             return;
         };
         let Some(worktree) = self.worktrees.get(selected).cloned() else {
@@ -1198,8 +1552,15 @@ impl App {
         let selected = &picker.projects[idx];
 
         self.worktree_project_override = override_for(selected);
-        self.worktrees.clear();
-        self.all_worktrees.clear();
+        clear_project_lists(
+            &mut self.worktrees,
+            &mut self.all_worktrees,
+            &mut self.visible_orphans,
+            &mut self.worktree_load,
+        );
+        // Rows only: the selection is restored when the new list arrives.
+        let (all_paths, assignment) = self.agent_assignment();
+        self.display_rows = self.compute_display_rows(&all_paths, &assignment);
         self.last_worktree_fetch = std::time::Instant::now();
         self.spawn_worktree_fetch();
 
@@ -1216,7 +1577,7 @@ impl App {
         // Resolve repo path, branch, and current base from whichever tab is active
         let (repo_path, worktree_branch, current_base) = match self.active_tab {
             DashboardTab::Worktrees => {
-                let Some(selected) = self.worktree_table_state.selected() else {
+                let Some(selected) = self.action_worktree_index() else {
                     return;
                 };
                 let Some(worktree) = self.worktrees.get(selected) else {
@@ -1365,7 +1726,7 @@ impl App {
 
     /// Open a multiplexer window or session for the selected worktree.
     pub fn open_selected_worktree(&mut self) {
-        let Some(selected) = self.worktree_table_state.selected() else {
+        let Some(selected) = self.action_worktree_index() else {
             return;
         };
         let Some(worktree) = self.worktrees.get(selected) else {
@@ -1410,30 +1771,45 @@ impl App {
         }
     }
 
-    /// Jump to the selected worktree's agent or mux window.
-    /// Tries the agent pane first, then falls back to workflow::open
-    /// which switches to an existing window/session or creates one.
+    /// Jump to the selected row's agent or mux window.
+    /// An agent sub-row jumps to its pane; a worktree row to its first agent
+    /// (sub-row in the unified view, assigned agent otherwise), else falls
+    /// back to workflow::open which switches to an existing window/session
+    /// or creates one.
     pub fn jump_to_selected_worktree(&mut self) {
         let Some(selected) = self.worktree_table_state.selected() else {
             return;
         };
-        let Some(worktree) = self.worktrees.get(selected) else {
-            return;
-        };
-
-        if self.removals.contains(&worktree.path) {
-            return;
-        }
-
-        // Try agent pane first for direct pane targeting
-        if let Some(agent) = self.all_agents.iter().find(|a| a.path == worktree.path) {
-            let target = agent.pane_id.clone();
-            self.switch_to_pane_and_track(&target);
+        if self
+            .selected_worktree()
+            .is_some_and(|w| self.removals.contains(&w.path))
+        {
             return;
         }
 
-        // Fall back to workflow::open (switches to existing or creates new)
-        self.open_selected_worktree();
+        match enter_target(&self.display_rows, selected) {
+            Some(EnterTarget::Pane(target)) => self.switch_to_pane_and_track(&target),
+            Some(EnterTarget::Worktree(index)) => {
+                let Some(worktree) = self.worktrees.get(index) else {
+                    return;
+                };
+                // Agents tab mode: no sub-rows, so look the agent up (an
+                // agent in a subdirectory of the worktree counts too).
+                if !self.unified {
+                    let all: Vec<PathBuf> =
+                        self.all_worktrees.iter().map(|w| w.path.clone()).collect();
+                    if let Some(target) =
+                        first_agent_in_worktree(&worktree.path, &all, &self.all_agents)
+                    {
+                        self.switch_to_pane_and_track(&target);
+                        return;
+                    }
+                }
+                // Fall back to workflow::open (switches to existing or creates new)
+                self.open_selected_worktree();
+            }
+            None => {}
+        }
     }
 
     // ── Add worktree methods ───────────────────────────────────────
@@ -1454,13 +1830,12 @@ impl App {
     fn repo_selection(&self) -> RepoSelection {
         match self.active_tab {
             DashboardTab::Worktrees => {
-                let Some(selected) = self.worktree_table_state.selected() else {
-                    return RepoSelection::Nothing;
-                };
-                match row_kind(selected, self.worktrees.len(), self.visible_orphans.len()) {
-                    RowKind::Worktree(i) => RepoSelection::Worktree(self.worktrees[i].path.clone()),
-                    RowKind::Orphan(_) => RepoSelection::Orphan,
-                    RowKind::None => RepoSelection::Nothing,
+                if let Some(worktree) = self.selected_worktree() {
+                    return RepoSelection::Worktree(worktree.path.clone());
+                }
+                match self.selected_row() {
+                    Some(DisplayRow::Orphan(_)) => RepoSelection::Orphan,
+                    _ => RepoSelection::Nothing,
                 }
             }
             DashboardTab::Agents => {
@@ -1836,12 +2211,8 @@ impl App {
     }
 
     /// Update the preview for the selected worktree (git log)
-    fn update_worktree_preview(&mut self) {
-        let current_path = self
-            .worktree_table_state
-            .selected()
-            .and_then(|idx| self.worktrees.get(idx))
-            .map(|w| w.path.clone());
+    pub(super) fn update_worktree_preview(&mut self) {
+        let current_path = self.selected_worktree().map(|w| w.path.clone());
 
         if current_path != self.worktree_preview_path {
             self.worktree_preview_path = current_path.clone();
@@ -2260,26 +2631,334 @@ mod tests {
         assert_eq!(rows[1].pr_info, Some(pr(102)));
     }
 
+    fn ag(id: &str, parent: Option<usize>) -> DisplayRow {
+        DisplayRow::Agent {
+            pane_id: id.into(),
+            parent,
+        }
+    }
+
+    fn pane(id: &str, path: &str) -> crate::multiplexer::AgentPane {
+        crate::multiplexer::AgentPane {
+            session: "s".into(),
+            window_name: format!("wm-{id}"),
+            pane_id: id.into(),
+            window_id: String::new(),
+            window_index: None,
+            path: PathBuf::from(path),
+            pane_title: None,
+            status: None,
+            status_ts: None,
+            activity_ts: None,
+            updated_ts: None,
+            window_cmd: None,
+            agent_command: None,
+            agent_kind: None,
+            prompt: None,
+            background: false,
+        }
+    }
+
     #[test]
     fn navigation_reaches_orphans() {
         // 2 worktrees + 1 orphan = 3 rows.
-        assert_eq!(wrap_next(0, 3), 1);
-        assert_eq!(wrap_next(1, 3), 2);
-        assert_eq!(wrap_next(2, 3), 0);
-        assert_eq!(wrap_prev(0, 3), 2);
-        assert_eq!(row_kind(1, 2, 1), RowKind::Worktree(1));
-        assert_eq!(row_kind(2, 2, 1), RowKind::Orphan(0));
-        assert_eq!(row_kind(3, 2, 1), RowKind::None);
+        let rows = [
+            DisplayRow::Worktree(0),
+            DisplayRow::Worktree(1),
+            DisplayRow::Orphan(0),
+        ];
+        assert_eq!(step_selectable(&rows, Some(0), true), Some(1));
+        assert_eq!(step_selectable(&rows, Some(1), true), Some(2));
+        assert_eq!(step_selectable(&rows, Some(2), true), Some(0));
+        assert_eq!(step_selectable(&rows, Some(0), false), Some(2));
+        // Nothing selected: like today, counting from row 0.
+        assert_eq!(step_selectable(&rows, None, true), Some(1));
+        assert_eq!(step_selectable(&[], None, true), None);
     }
 
     #[test]
     fn actions_noop_on_orphan() {
-        // Every worktree action resolves its target with `worktrees.get(selected)`,
-        // which is only reachable for `RowKind::Worktree`.
-        assert!(!matches!(row_kind(2, 2, 1), RowKind::Worktree(_)));
+        // Worktree actions resolve their target with `worktree_index_of`,
+        // which has no worktree for an orphan row.
+        assert_eq!(worktree_index_of(&DisplayRow::Orphan(0)), None);
+        assert_eq!(worktree_index_of(&DisplayRow::OutsideHeader), None);
+        assert_eq!(worktree_index_of(&DisplayRow::Worktree(1)), Some(1));
         // Jump numbers (1-9) address real rows only.
-        assert_eq!(row_kind(2, 2, 1), RowKind::Orphan(0));
-        assert_eq!(jump_target(2, 2), None);
-        assert_eq!(jump_target(1, 2), Some(1));
+        let rows = [
+            DisplayRow::Worktree(0),
+            DisplayRow::Worktree(1),
+            DisplayRow::Orphan(0),
+        ];
+        assert_eq!(nth_worktree_row(&rows, 2), None);
+        assert_eq!(nth_worktree_row(&rows, 1), Some(1));
+    }
+
+    #[test]
+    fn selection_follows_agent_across_rebuild() {
+        let after = [
+            DisplayRow::Worktree(0),
+            DisplayRow::Worktree(1),
+            ag("p1", Some(1)),
+        ];
+        assert_eq!(restore_row(&after, Some("p1"), None), Restored::Found(2));
+        // By path for worktree rows.
+        let by_path = |r: &DisplayRow| *r == DisplayRow::Worktree(1);
+        assert_eq!(
+            restore_row(&after, None, Some(&by_path)),
+            Restored::Found(1)
+        );
+        // A vanished agent falls back to its parent worktree's path.
+        assert_eq!(
+            restore_row(&after, Some("gone"), Some(&by_path)),
+            Restored::Found(1)
+        );
+        assert_eq!(restore_row(&after, None, None), Restored::NoIdentity);
+    }
+
+    #[test]
+    fn selection_never_lands_on_header() {
+        let rows = [
+            DisplayRow::Orphan(0),
+            DisplayRow::OutsideHeader,
+            ag("p2", None),
+        ];
+        let nothing = |_: &DisplayRow| false;
+        assert_eq!(
+            restore_row(&rows, Some("p1"), Some(&nothing)),
+            Restored::Lost(Some(0))
+        );
+        assert_eq!(step_selectable(&rows, Some(0), true), Some(2));
+        assert_eq!(step_selectable(&rows, Some(2), false), Some(0));
+        // A header first is never the fallback.
+        let header_first = [DisplayRow::OutsideHeader, ag("p2", None)];
+        assert_eq!(first_selectable(&header_first), Some(1));
+        assert_eq!(
+            restore_row(&header_first, Some("p1"), None),
+            Restored::Lost(Some(1))
+        );
+        assert_eq!(restore_row(&[], Some("p1"), None), Restored::Lost(None));
+    }
+
+    #[test]
+    fn enter_on_worktree_targets_first_agent_row() {
+        let rows = [
+            DisplayRow::Worktree(0),
+            ag("p1", Some(0)),
+            ag("p2", Some(0)),
+        ];
+        assert_eq!(enter_target(&rows, 0), Some(EnterTarget::Pane("p1".into())));
+        assert_eq!(enter_target(&rows, 2), Some(EnterTarget::Pane("p2".into())));
+        // No sub-row: the worktree's own window logic.
+        let bare = [
+            DisplayRow::Worktree(0),
+            DisplayRow::Worktree(1),
+            ag("p1", Some(1)),
+        ];
+        assert_eq!(enter_target(&bare, 0), Some(EnterTarget::Worktree(0)));
+        assert_eq!(enter_target(&bare, 1), Some(EnterTarget::Pane("p1".into())));
+        assert_eq!(enter_target(&[DisplayRow::Orphan(0)], 0), None);
+        assert_eq!(enter_target(&bare, 9), None);
+        // The next row is only a sub-row when it belongs to this worktree.
+        let other_parent = [DisplayRow::Worktree(0), ag("p1", Some(1))];
+        assert_eq!(
+            enter_target(&other_parent, 0),
+            Some(EnterTarget::Worktree(0))
+        );
+        let outside_next = [DisplayRow::Worktree(0), ag("p2", None)];
+        assert_eq!(
+            enter_target(&outside_next, 0),
+            Some(EnterTarget::Worktree(0))
+        );
+    }
+
+    #[test]
+    fn panel_toggles_work_on_outside_agent_rows() {
+        // `i`/`l` are view toggles: the dispatcher flips `worktree_panels`
+        // directly, whatever the selected row (here an outside-group agent).
+        let selected = ag("p2", None);
+        assert!(is_outside_agent(&selected));
+        let mut panels = WorktreePanels::default();
+        panels.toggle_info();
+        panels.toggle_log();
+        assert!(panels.info && panels.log);
+        panels.toggle_info();
+        assert!(!panels.info && panels.log);
+    }
+
+    #[test]
+    fn enter_on_worktree_targets_agent_in_subdirectory() {
+        let all = vec![PathBuf::from("/ws/r/main"), PathBuf::from("/ws/r/feat")];
+        let agents = [pane("%1", "/ws/r/main"), pane("%2", "/ws/r/feat/backend")];
+        assert_eq!(
+            first_agent_in_worktree(Path::new("/ws/r/feat"), &all, &agents),
+            Some("%2".to_string())
+        );
+        assert_eq!(
+            first_agent_in_worktree(Path::new("/ws/r/main"), &all, &agents),
+            Some("%1".to_string())
+        );
+        assert_eq!(
+            first_agent_in_worktree(Path::new("/ws/r/other"), &all, &agents),
+            None
+        );
+    }
+
+    #[test]
+    fn actions_from_agent_row_use_parent_worktree() {
+        assert_eq!(worktree_index_of(&ag("p1", Some(1))), Some(1));
+        assert_eq!(worktree_index_of(&ag("p2", None)), None);
+        assert!(is_outside_agent(&ag("p2", None)));
+        assert!(!is_outside_agent(&ag("p1", Some(1))));
+        assert!(!is_outside_agent(&DisplayRow::Orphan(0)));
+    }
+
+    #[test]
+    fn jump_to_index_counts_worktree_rows_only() {
+        let rows = [
+            DisplayRow::Worktree(0),
+            ag("a", Some(0)),
+            DisplayRow::Worktree(1),
+            ag("b", Some(1)),
+            DisplayRow::Worktree(2),
+        ];
+        assert_eq!(nth_worktree_row(&rows, 2), Some(4));
+        assert_eq!(nth_worktree_row(&rows, 0), Some(0));
+        assert_eq!(nth_worktree_row(&rows, 3), None);
+    }
+
+    #[test]
+    fn failed_fetch_still_shows_the_outside_group() {
+        let mut load = WorktreeLoad::default();
+        let generation = load.generation();
+        let event = fetch_result_event(generation, None, HashMap::new);
+        let AppEvent::WorktreeListFailed(reported) = event else {
+            panic!("a failed fetch must report its completion");
+        };
+        assert!(load.complete(reported));
+        assert!(load.loaded());
+
+        let agents = [pane("A", "/elsewhere")];
+        let assignment = unified::assign_agents(&[], &agents);
+        let rows = display_rows_for(
+            true,
+            &RowInputs {
+                visible_worktrees: &[],
+                all_worktrees: &[],
+                agents: &agents,
+                assignment: &assignment,
+                orphan_count: 0,
+                filter: "",
+                outside_group: load.loaded(),
+                home: None,
+            },
+        );
+        assert_eq!(
+            rows,
+            vec![
+                DisplayRow::OutsideHeader,
+                DisplayRow::Agent {
+                    pane_id: "A".into(),
+                    parent: None
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn listed_fetch_reports_its_generation() {
+        let event = fetch_result_event(3, Some(vec![]), HashMap::new);
+        assert!(matches!(event, AppEvent::WorktreeList(3, ref w, _) if w.is_empty()));
+    }
+
+    #[test]
+    fn fetch_of_a_superseded_project_is_ignored() {
+        let mut load = WorktreeLoad::default();
+        let old = load.generation();
+        load.restart();
+        assert!(!load.complete(old), "stale list accepted");
+        assert!(!load.loaded());
+        assert!(load.complete(load.generation()));
+        assert!(load.loaded());
+    }
+
+    #[test]
+    fn project_switch_drops_old_rows_until_the_new_list() {
+        let orphan = OrphanEntry {
+            project: "alpha".into(),
+            name: "old-env".into(),
+            path: "/ws/alpha/old-env".into(),
+            status: worktree_info::InfoStatus {
+                label: "gone".into(),
+                tone: worktree_info::Tone::Muted,
+            },
+            id: None,
+            details: vec![],
+            hint: None,
+        };
+        let mut worktrees = vec![worktree("/ws/alpha", "a", true)];
+        let mut all = worktrees.clone();
+        let mut orphans = vec![orphan];
+        let mut load = WorktreeLoad::default();
+        assert!(load.complete(load.generation()));
+
+        clear_project_lists(&mut worktrees, &mut all, &mut orphans, &mut load);
+        assert!(worktrees.is_empty() && all.is_empty());
+        assert!(orphans.is_empty(), "old project's orphans stay selectable");
+        assert!(!load.loaded());
+        // refresh() leaves the (empty) rows alone until the new list arrives.
+        assert!(!refresh_rebuilds_rows(true, &load));
+        assert!(!refresh_rebuilds_rows(false, &load));
+        assert!(load.complete(load.generation()));
+        assert!(refresh_rebuilds_rows(true, &load));
+        assert!(!refresh_rebuilds_rows(false, &load));
+    }
+
+    #[test]
+    fn agents_tab_mode_has_no_agent_rows() {
+        let wts = vec![PathBuf::from("/ws/a"), PathBuf::from("/ws/b")];
+        let agents = [pane("A", "/ws/b/src"), pane("B", "/elsewhere")];
+        let assignment = unified::assign_agents(&wts, &agents);
+        let inputs = RowInputs {
+            visible_worktrees: &wts,
+            all_worktrees: &wts,
+            agents: &agents,
+            assignment: &assignment,
+            orphan_count: 1,
+            filter: "",
+            outside_group: true,
+            home: None,
+        };
+        assert_eq!(
+            display_rows_for(false, &inputs),
+            vec![
+                DisplayRow::Worktree(0),
+                DisplayRow::Worktree(1),
+                DisplayRow::Orphan(0),
+            ]
+        );
+        // The same inputs in unified mode do carry agent rows.
+        let unified_rows = display_rows_for(true, &inputs);
+        assert!(unified_rows.contains(&ag("A", Some(1))));
+        assert!(unified_rows.contains(&DisplayRow::OutsideHeader));
+    }
+
+    #[test]
+    fn unified_filter_keeps_worktree_matched_by_agent_title() {
+        let all = vec![PathBuf::from("/ws/a"), PathBuf::from("/ws/b")];
+        let mut a = pane("A", "/ws/b/src");
+        a.pane_title = Some("Fork workmux".into());
+        let agents = [a];
+        let assignment = unified::assign_agents(&all, &agents);
+        let keep = unified::worktrees_visible_by_agent(&assignment, &agents, "FORK");
+        assert_eq!(keep, HashSet::from([1]));
+    }
+
+    #[test]
+    fn tab_switch_is_a_noop_in_unified_mode() {
+        use DashboardTab::*;
+        assert_eq!(next_tab(Worktrees, true), Worktrees);
+        assert_eq!(next_tab(Agents, true), Worktrees);
+        assert_eq!(next_tab(Worktrees, false), Agents);
+        assert_eq!(next_tab(Agents, false), Worktrees);
     }
 }

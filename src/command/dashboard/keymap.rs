@@ -204,6 +204,20 @@ fn comment_key(key: KeyEvent) -> Option<Action> {
     }
 }
 
+/// Help rows as the overlay shows them: the unified view has no Agents tab,
+/// so the dashboard contexts lose their Tab row (the diff view keeps its own).
+pub fn view_help_rows(
+    ctx: Context,
+    exit_key: InputExitKey,
+    unified: bool,
+) -> Vec<(String, &'static str)> {
+    let mut rows = help_rows(ctx, exit_key);
+    if unified && matches!(ctx, Context::DashboardNormal | Context::WorktreeNormal) {
+        rows.retain(|(key, _)| key != "Tab");
+    }
+    rows
+}
+
 /// Get help rows for a context: (key, description) pairs.
 pub fn help_rows(ctx: Context, exit_key: InputExitKey) -> Vec<(String, &'static str)> {
     let rows = match ctx {
@@ -488,5 +502,18 @@ mod tests {
         let rows = help_rows(Context::WorktreeNormal, InputExitKey::default());
         assert!(rows.contains(&("i".to_string(), "Toggle info panel")));
         assert!(rows.contains(&("l".to_string(), "Toggle git log panel")));
+    }
+
+    #[test]
+    fn unified_help_has_no_tab_row() {
+        for ctx in [Context::WorktreeNormal, Context::DashboardNormal] {
+            let rows = view_help_rows(ctx, InputExitKey::default(), true);
+            assert!(!rows.iter().any(|(key, _)| key == "Tab"), "{ctx:?}");
+            let tabs = view_help_rows(ctx, InputExitKey::default(), false);
+            assert!(tabs.iter().any(|(key, _)| key == "Tab"), "{ctx:?}");
+        }
+        // The diff view's Tab is its own toggle and stays.
+        let diff = view_help_rows(Context::DiffNormal, InputExitKey::default(), true);
+        assert!(diff.iter().any(|(key, _)| key == "Tab"));
     }
 }

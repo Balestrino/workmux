@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use super::super::app::{App, RowContextKind};
-use super::super::keymap::{Context, help_rows};
+use super::super::keymap::{Context, view_help_rows};
 use super::popup::{centered_rect, popup_block, render_popup};
 use super::theme::ThemePalette;
 
@@ -149,7 +149,7 @@ pub fn render_confirm_remove(f: &mut Frame, app: &App) {
 pub fn render_help(f: &mut Frame, app: &App) {
     let ctx = get_help_context(app);
     let title = context_title(ctx);
-    let keybindings = help_rows(ctx, app.config.dashboard.input_exit_key());
+    let keybindings = view_help_rows(ctx, app.config.dashboard.input_exit_key(), app.unified);
 
     // Calculate dimensions based on content
     let row_count = keybindings.len() as u16;

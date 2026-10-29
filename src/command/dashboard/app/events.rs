@@ -47,7 +47,13 @@ impl App {
                     self.apply_worktree_filters();
                 }
             }
-            AppEvent::WorktreeList(mut worktrees, names) => {
+            AppEvent::WorktreeList(generation, mut worktrees, names) => {
+                // A list of the project shown before a switch: drop it and
+                // fetch the current one (the old fetch blocked its spawn).
+                if !self.worktree_load.complete(generation) {
+                    self.trigger_worktree_refetch();
+                    return;
+                }
                 self.project_names = names;
                 self.removals.filter_snapshot(&mut worktrees);
                 let needs_pr_fetch = self.all_worktrees.is_empty() && !worktrees.is_empty();
@@ -60,6 +66,16 @@ impl App {
                 if needs_pr_fetch {
                     self.last_pr_fetch = std::time::Instant::now() - super::PR_FETCH_INTERVAL;
                 }
+            }
+            AppEvent::WorktreeListFailed(generation) => {
+                if !self.worktree_load.complete(generation) {
+                    self.trigger_worktree_refetch();
+                    return;
+                }
+                // Keep the last list; the view is loaded either way, so
+                // the outside group appears even with no repository.
+                self.rebuild_display_rows();
+                self.update_worktree_preview();
             }
             AppEvent::WorktreeInfo(result) => {
                 match result {

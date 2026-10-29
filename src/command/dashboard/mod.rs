@@ -37,6 +37,7 @@ mod settings;
 mod sort;
 pub mod spinner;
 pub mod ui;
+mod unified;
 mod worktree_info;
 pub use app::DashboardTab;
 
@@ -126,6 +127,12 @@ impl Drop for TerminalSession {
     }
 }
 
+/// The `--tab` override to apply: the unified view has no Agents tab, so
+/// `--tab agents` is ignored there.
+fn cli_tab(tab: Option<DashboardTab>, unified_view: bool) -> Option<DashboardTab> {
+    tab.filter(|t| !(unified_view && *t == DashboardTab::Agents))
+}
+
 pub fn run(
     cli_preview_size: Option<u8>,
     open_diff: bool,
@@ -160,7 +167,7 @@ pub fn run(
     }
 
     // CLI tab override: set initial active tab if specified
-    if let Some(initial_tab) = tab {
+    if let Some(initial_tab) = cli_tab(tab, app.unified) {
         app.active_tab = initial_tab;
     }
 
@@ -618,7 +625,16 @@ fn handle_terminal_event(
 
 #[cfg(test)]
 mod tests {
-    use super::{enter_terminal, leave_terminal};
+    use super::{DashboardTab, cli_tab, enter_terminal, leave_terminal};
+
+    #[test]
+    fn cli_tab_agents_is_ignored_in_unified_mode() {
+        use DashboardTab::*;
+        assert_eq!(cli_tab(Some(Agents), true), None);
+        assert_eq!(cli_tab(Some(Worktrees), true), Some(Worktrees));
+        assert_eq!(cli_tab(Some(Agents), false), Some(Agents));
+        assert_eq!(cli_tab(None, false), None);
+    }
 
     #[test]
     fn terminal_control_sequences_enable_and_disable_mouse_capture() {

@@ -4,13 +4,15 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use unicode_width::UnicodeWidthStr;
 
-use super::actions::{Action, apply_action};
+use super::actions::{Action, apply_action, with_jump_label};
 use super::app::{
     App, DashboardTab, MouseRowClick, MouseRowId, PaletteCommand, RowContextKind, RowContextMenu,
     ViewMode,
 };
 use super::layout::{dashboard_content_areas, dashboard_outer_areas, preview_visible};
+use super::unified::{DisplayRow, is_selectable};
 use crate::config::DashboardLayout;
+use std::path::PathBuf;
 
 const TABLE_HEADER_HEIGHT: u16 = 1;
 const SCROLL_LINES: usize = 3;
@@ -133,7 +135,13 @@ fn open_row_context(app: &mut App, target: MouseTarget, column: u16, row: u16) -
         }
         DashboardTab::Worktrees => {
             app.select_worktree(index);
-            (RowContextKind::Worktree, worktree_context_commands())
+            if !app.display_rows.get(index).is_some_and(offers_row_context) {
+                return false;
+            }
+            (
+                RowContextKind::Worktree,
+                with_jump_label(worktree_context_commands(), app.display_rows.get(index)),
+            )
         }
     };
     app.last_mouse_row_click = None;
@@ -304,7 +312,51 @@ fn row_id(app: &App, index: usize) -> Option<MouseRowId> {
             .map(|agent| MouseRowId::Agent(agent.pane_id.clone())),
         // Orphan rows get an id too (they can be selected); the actions they
         // would trigger are no-ops.
-        DashboardTab::Worktrees => app.row_path(index).map(MouseRowId::Worktree),
+        DashboardTab::Worktrees => app
+            .display_rows
+            .get(index)
+            .and_then(|row| worktree_row_id(row, || app.row_path(index))),
+    }
+}
+
+/// Mouse id of a Worktrees table row: an agent sub-row by pane id, a
+/// worktree or orphan row by path (`path`), the group header none.
+fn worktree_row_id(row: &DisplayRow, path: impl FnOnce() -> Option<PathBuf>) -> Option<MouseRowId> {
+    match row {
+        DisplayRow::Agent { pane_id, .. } => Some(MouseRowId::WorktreeAgent(pane_id.clone())),
+        DisplayRow::OutsideHeader => None,
+        DisplayRow::Worktree(_) | DisplayRow::Orphan(_) => path().map(MouseRowId::Worktree),
+    }
+}
+
+/// Whether right-click on this row opens the worktree menu: an agent
+/// sub-row offers its parent's actions; the outside group and its header
+/// have none.
+fn offers_row_context(row: &DisplayRow) -> bool {
+    !matches!(
+        row,
+        DisplayRow::OutsideHeader | DisplayRow::Agent { parent: None, .. }
+    )
+}
+
+/// Wheel step over the Worktrees rows: the next selectable row in that
+/// direction, skipping the group header, stopping at the ends.
+fn scrolled_selectable(rows: &[DisplayRow], selected: Option<usize>, down: bool) -> Option<usize> {
+    let last = rows.len().checked_sub(1)?;
+    let current = selected.unwrap_or(0).min(last);
+    let next = if down {
+        (current + 1..rows.len()).find(|&i| is_selectable(&rows[i]))
+    } else {
+        (0..current).rev().find(|&i| is_selectable(&rows[i]))
+    };
+    Some(next.unwrap_or(current))
+}
+
+/// The unified view draws no tab bar to click: tab targets do nothing.
+fn hide_tabs(target: MouseTarget, unified: bool) -> MouseTarget {
+    match target {
+        MouseTarget::Tab(_) if unified => MouseTarget::None,
+        target => target,
     }
 }
 
@@ -352,9 +404,9 @@ fn scroll_target(app: &mut App, target: MouseTarget, down: bool) -> bool {
                     }
                 }
                 DashboardTab::Worktrees => {
-                    if let Some(index) = scrolled_index(
+                    if let Some(index) = scrolled_selectable(
+                        &app.display_rows,
                         app.worktree_table_state.selected(),
-                        app.worktree_row_count(),
                         down,
                     ) {
                         app.select_worktree(index);
@@ -413,7 +465,7 @@ fn dashboard_target_at(app: &App, column: u16, row: u16) -> MouseTarget {
         DashboardTab::Agents => app.agents.len(),
         DashboardTab::Worktrees => app.worktree_row_count(),
     };
-    dashboard_surface_target(
+    let target = dashboard_surface_target(
         area,
         preview_visible(
             app.mux.supports_preview(),
@@ -425,7 +477,8 @@ fn dashboard_target_at(app: &App, column: u16, row: u16) -> MouseTarget {
         offset,
         count,
         (column, row),
-    )
+    );
+    hide_tabs(target, app.unified)
 }
 
 fn dashboard_surface_target(
@@ -561,6 +614,15 @@ fn agent_footer_items(app: &App) -> Vec<FooterItem> {
 }
 
 fn worktree_footer_items(app: &App) -> Vec<FooterItem> {
+    worktree_footer_items_for(
+        app.worktree_sort_mode.label(),
+        &app.worktree_filter_text,
+        app.unified,
+    )
+}
+
+/// Worktree footer items; no Tab entry in the unified view (no Agents tab).
+fn worktree_footer_items_for(sort: &str, filter: &str, unified: bool) -> Vec<FooterItem> {
     let mut items = vec![
         FooterItem::action("a Add", Action::AddWorktree),
         FooterItem::action("r Remove", Action::RemoveSelectedWorktree),
@@ -568,24 +630,21 @@ fn worktree_footer_items(app: &App) -> Vec<FooterItem> {
         FooterItem::action("c Close", Action::CloseSelectedWorktreeWindow),
         FooterItem::action("o PR", Action::OpenPr),
         FooterItem::label("1-9 Jump"),
-        FooterItem::action(
-            format!("s Sort ({})", app.worktree_sort_mode.label()),
-            Action::CycleWorktreeSortMode,
-        ),
+        FooterItem::action(format!("s Sort ({sort})"), Action::CycleWorktreeSortMode),
         FooterItem::action("p Project", Action::ShowProjectPicker),
         FooterItem::action("i Info", Action::ToggleWorktreeInfo),
         FooterItem::action("l Log", Action::ToggleWorktreeLog),
     ];
-    if !app.worktree_filter_text.is_empty() {
+    if !filter.is_empty() {
         items.push(FooterItem::action(
-            format!("/ {}", app.worktree_filter_text),
+            format!("/ {filter}"),
             Action::EnterFilterMode,
         ));
     }
-    items.extend([
-        FooterItem::action("Tab Agents", Action::SwitchTab),
-        FooterItem::action("q Quit", Action::Quit),
-    ]);
+    if !unified {
+        items.push(FooterItem::action("Tab Agents", Action::SwitchTab));
+    }
+    items.push(FooterItem::action("q Quit", Action::Quit));
     items
 }
 
@@ -682,7 +741,6 @@ fn contains(area: Rect, column: u16, row: u16) -> bool {
 mod tests {
     use super::*;
     use crate::command::dashboard::diff::{DiffView, FileEntry};
-    use std::path::PathBuf;
 
     fn diff_view() -> DiffView {
         DiffView {
@@ -920,5 +978,116 @@ mod tests {
             footer_target_at(2, 3, &items),
             MouseTarget::Action(Action::ToggleDiffType)
         );
+    }
+
+    fn unified_rows() -> Vec<DisplayRow> {
+        vec![
+            DisplayRow::Worktree(0),
+            DisplayRow::Agent {
+                pane_id: "p1".into(),
+                parent: Some(0),
+            },
+            DisplayRow::OutsideHeader,
+            DisplayRow::Agent {
+                pane_id: "p2".into(),
+                parent: None,
+            },
+        ]
+    }
+
+    fn row_id_at(rows: &[DisplayRow], screen_row: u16) -> Option<MouseRowId> {
+        let area = Rect::new(0, 0, 100, 24);
+        let target = dashboard_surface_target(
+            area,
+            false,
+            40,
+            DashboardLayout::Stacked,
+            0,
+            rows.len(),
+            (4, screen_row),
+        );
+        let MouseTarget::Row(index) = target else {
+            return None;
+        };
+        worktree_row_id(&rows[index], || Some(PathBuf::from("/ws/wt")))
+    }
+
+    #[test]
+    fn mouse_row_maps_to_display_row() {
+        let rows = unified_rows();
+        // Tab header (2 lines) and table header, then one screen row per
+        // display row.
+        assert_eq!(
+            row_id_at(&rows, 3),
+            Some(MouseRowId::Worktree(PathBuf::from("/ws/wt")))
+        );
+        assert_eq!(
+            row_id_at(&rows, 4),
+            Some(MouseRowId::WorktreeAgent("p1".into()))
+        );
+        assert_eq!(row_id_at(&rows, 5), None);
+        assert_eq!(
+            row_id_at(&rows, 6),
+            Some(MouseRowId::WorktreeAgent("p2".into()))
+        );
+    }
+
+    #[test]
+    fn row_context_menu_skips_header_and_outside_agents() {
+        let rows = unified_rows();
+        assert!(offers_row_context(&rows[0]));
+        assert!(offers_row_context(&rows[1]));
+        assert!(!offers_row_context(&rows[2]));
+        assert!(!offers_row_context(&rows[3]));
+        assert!(offers_row_context(&DisplayRow::Orphan(0)));
+    }
+
+    #[test]
+    fn wheel_scrolling_skips_the_group_header() {
+        let rows = unified_rows();
+        assert_eq!(scrolled_selectable(&rows, Some(1), true), Some(3));
+        assert_eq!(scrolled_selectable(&rows, Some(3), false), Some(1));
+        assert_eq!(scrolled_selectable(&rows, Some(3), true), Some(3));
+        assert_eq!(scrolled_selectable(&rows, Some(0), false), Some(0));
+        assert_eq!(scrolled_selectable(&rows, None, true), Some(1));
+        assert_eq!(scrolled_selectable(&[], None, true), None);
+        // Nothing selectable past the header: stay put.
+        let trailing = vec![DisplayRow::Worktree(0), DisplayRow::OutsideHeader];
+        assert_eq!(scrolled_selectable(&trailing, Some(0), true), Some(0));
+    }
+
+    #[test]
+    fn unified_view_has_no_tab_targets() {
+        assert_eq!(
+            hide_tabs(MouseTarget::Tab(DashboardTab::Agents), true),
+            MouseTarget::None
+        );
+        assert_eq!(
+            hide_tabs(MouseTarget::Tab(DashboardTab::Worktrees), true),
+            MouseTarget::None
+        );
+        assert_eq!(
+            hide_tabs(MouseTarget::Tab(DashboardTab::Agents), false),
+            MouseTarget::Tab(DashboardTab::Agents)
+        );
+        assert_eq!(hide_tabs(MouseTarget::Row(2), true), MouseTarget::Row(2));
+    }
+
+    #[test]
+    fn footer_has_no_tab_entry_in_unified_mode() {
+        let unified = worktree_footer_items_for("age", "", true);
+        assert!(
+            !unified
+                .iter()
+                .any(|item| item.action == Some(Action::SwitchTab) || item.text.starts_with("Tab")),
+            "{unified:?}"
+        );
+        assert_eq!(unified.last().map(|i| i.text.as_str()), Some("q Quit"));
+
+        let tabs = worktree_footer_items_for("age", "fork", false);
+        let texts: Vec<&str> = tabs.iter().map(|i| i.text.as_str()).collect();
+        assert!(texts.contains(&"Tab Agents"), "{texts:?}");
+        assert!(texts.contains(&"/ fork"), "{texts:?}");
+        assert!(texts.contains(&"s Sort (age)"), "{texts:?}");
     }
 }
