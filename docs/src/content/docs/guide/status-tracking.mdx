@@ -289,7 +289,7 @@ What counts as background work:
 
 For Codex this also fixes an agent left 🤖 forever when its turn ended before
 its subagents: Codex does not wake the main agent after the last subagent
-stops, so workmux now marks it ✅ at that `SubagentStop`.
+stops, so workmux marks it ✅ at that `SubagentStop`.
 
 Every item expires, so an agent can never stay ⏳ with nothing running:
 
@@ -299,15 +299,18 @@ Every item expires, so an agent can never stay ⏳ with nothing running:
 | Monitor  | its timeout plus 2 minutes; 24 hours for a persistent Monitor |
 | Shell    | 12 hours after it started                                     |
 
-Expired items stop counting at once in the dashboard, sidebar and
-`workmux list`; the tmux window icon is refreshed by the agent's next hook.
+Expired items stop counting at once, even if no hook arrives: when the last
+one expires after the turn has ended, the dashboard, sidebar, `workmux list`,
+`workmux status` and `workmux wait` see the agent as ✅ (done since that
+expiry). The tmux window icon is refreshed by the agent's next hook.
 
 The hooks installed by `workmux setup` already deliver every event needed.
 Background is not a separate stored status: the agent stays `working`, and
 `workmux status --json` adds `"background": true` to its entry (the table
 shows `working (background)`). The sidebar `{status_label}` shows
-`Background`, and the nerdfont sidebar icon is nf-md-timer_sand. Customize the
-icon with `status_icons.background`.
+`Background`. With nerdfonts enabled and no custom icon, the sidebar (and only
+the sidebar) draws nf-md-timer_sand; everywhere else the default icon is ⏳.
+Customize the icon with `status_icons.background`.
 
 ## Interrupted agent detection
 

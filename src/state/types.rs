@@ -181,6 +181,28 @@ impl AgentState {
             && background::has_live(&self.background, now)
     }
 
+    /// Status to show at `now`.
+    ///
+    /// An agent whose turn has ended and whose background items have all
+    /// expired is done, even if no hook arrived to store that. Otherwise the
+    /// stored status.
+    pub fn effective_status(&self, now: u64) -> Option<AgentStatus> {
+        if self.background_expired(now) {
+            Some(AgentStatus::Done)
+        } else {
+            self.status
+        }
+    }
+
+    /// Whether the stored `Working` only stood for background work that has
+    /// all expired by `now`.
+    fn background_expired(&self, now: u64) -> bool {
+        self.status == Some(AgentStatus::Working)
+            && !self.turn_active
+            && !self.background.is_empty()
+            && !background::has_live(&self.background, now)
+    }
+
     /// Convert to AgentPane for dashboard display.
     ///
     /// The caller is responsible for providing the best available session/window names
@@ -190,6 +212,12 @@ impl AgentState {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+        // Once background work has expired the agent became done when the
+        // last item expired, so its timestamps start there.
+        let expired_at = self
+            .background_expired(now)
+            .then(|| self.background.iter().map(|item| item.expires_ts).max())
+            .flatten();
         AgentPane {
             session,
             window_name,
@@ -198,9 +226,9 @@ impl AgentState {
             window_index: None,
             path: self.cwd.as_ref().unwrap_or(&self.workdir).clone(),
             pane_title: self.pane_title.clone(),
-            status: self.status,
-            status_ts: self.status_ts,
-            activity_ts: self.activity_ts(),
+            status: self.effective_status(now),
+            status_ts: expired_at.or(self.status_ts),
+            activity_ts: expired_at.or_else(|| self.activity_ts()),
             updated_ts: Some(self.updated_ts),
             window_cmd: None,
             agent_command: Some(self.command.clone()),
@@ -346,6 +374,59 @@ mod tests {
         state.turn_active = false;
         state.status = Some(AgentStatus::Done);
         assert!(!state.in_background(50));
+    }
+
+    fn shell_item(id: &str, expires_ts: u64) -> BackgroundItem {
+        BackgroundItem {
+            id: id.into(),
+            kind: BackgroundKind::Shell,
+            started_ts: 10,
+            expires_ts,
+            transcript_offset: None,
+        }
+    }
+
+    #[test]
+    fn effective_status_is_done_once_every_item_has_expired() {
+        let mut state = legacy_state(Some("working"), Some(5), 5);
+        state.background = vec![shell_item("a", 100), shell_item("b", 80)];
+        assert_eq!(state.effective_status(99), Some(AgentStatus::Working));
+        assert_eq!(state.effective_status(100), Some(AgentStatus::Done));
+
+        // A running turn, or plain working with nothing tracked, stays working.
+        state.turn_active = true;
+        assert_eq!(state.effective_status(100), Some(AgentStatus::Working));
+        state.turn_active = false;
+        state.background.clear();
+        assert_eq!(state.effective_status(100), Some(AgentStatus::Working));
+
+        // Other statuses are never rewritten.
+        state.background = vec![shell_item("a", 100)];
+        state.status = Some(AgentStatus::Waiting);
+        assert_eq!(state.effective_status(100), Some(AgentStatus::Waiting));
+        state.status = None;
+        assert_eq!(state.effective_status(100), None);
+    }
+
+    #[test]
+    fn agent_pane_shows_done_after_background_expired() {
+        let mut state = legacy_state(Some("working"), Some(5), 5);
+        state.activity_ts = Some(5);
+        state.background = vec![shell_item("a", 100), shell_item("b", 80)];
+        let pane = state.to_agent_pane("main".into(), "wm-test".into());
+        assert_eq!(pane.status, Some(AgentStatus::Done));
+        assert!(!pane.background);
+        assert_eq!(pane.status_ts, Some(100));
+        assert_eq!(pane.activity_ts, Some(100));
+
+        // Live items keep the stored working status and its timestamps.
+        let far = u64::MAX / 2;
+        state.background = vec![shell_item("a", far)];
+        let pane = state.to_agent_pane("main".into(), "wm-test".into());
+        assert_eq!(pane.status, Some(AgentStatus::Working));
+        assert!(pane.background);
+        assert_eq!(pane.status_ts, Some(5));
+        assert_eq!(pane.activity_ts, Some(5));
     }
 
     #[test]

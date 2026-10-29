@@ -192,7 +192,9 @@ terminal.
 | `shell` | start + 12 h (Claude reports no timeout for background commands) |
 
 Expired items are ignored by the derived state on every read and dropped on
-the next write. The values are constants in this version (tunable later if
+the next write. A stored `Working` with an idle turn whose items have all
+expired reads as `Done` (`AgentState::effective_status`), timestamped at the
+latest expiry, so no hook is needed to leave the background state. The values are constants in this version (tunable later if
 needed).
 
 ### Interruption detection
