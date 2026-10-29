@@ -470,7 +470,7 @@ pub fn apply_action(app: &mut App, action: Action) -> bool {
         // Command palette
         Action::ShowCommandPalette => {
             let ctx = super::get_context(app);
-            let commands = palette_commands(ctx, app);
+            let commands = without_tab_switch(palette_commands(ctx, app), app.unified);
             app.pending_command_palette = Some(CommandPaletteState {
                 commands,
                 filter: String::new(),
@@ -479,6 +479,105 @@ pub fn apply_action(app: &mut App, action: Action) -> bool {
             false
         }
     }
+}
+
+/// The unified view has no Agents tab: drop the tab switch.
+fn without_tab_switch(mut cmds: Vec<PaletteCommand>, unified: bool) -> Vec<PaletteCommand> {
+    if unified {
+        cmds.retain(|command| command.action != Action::SwitchTab);
+    }
+    cmds
+}
+
+/// Palette commands of the Worktrees table.
+fn worktree_palette_commands() -> Vec<PaletteCommand> {
+    vec![
+        PaletteCommand {
+            label: "Show help",
+            key_hint: "?",
+            action: Action::ShowHelp,
+        },
+        PaletteCommand {
+            label: "Quit",
+            key_hint: "q",
+            action: Action::Quit,
+        },
+        PaletteCommand {
+            label: "Switch to agents",
+            key_hint: "Tab",
+            action: Action::SwitchTab,
+        },
+        PaletteCommand {
+            label: "Jump to worktree",
+            key_hint: "Enter",
+            action: Action::JumpToSelectedWorktree,
+        },
+        PaletteCommand {
+            label: "Open PR in browser",
+            key_hint: "o",
+            action: Action::OpenPr,
+        },
+        PaletteCommand {
+            label: "Open PR checks",
+            key_hint: "O",
+            action: Action::OpenPrChecks,
+        },
+        PaletteCommand {
+            label: "Add worktree",
+            key_hint: "a",
+            action: Action::AddWorktree,
+        },
+        PaletteCommand {
+            label: "Remove worktree",
+            key_hint: "r",
+            action: Action::RemoveSelectedWorktree,
+        },
+        PaletteCommand {
+            label: "Close mux window",
+            key_hint: "c",
+            action: Action::CloseSelectedWorktreeWindow,
+        },
+        PaletteCommand {
+            label: "Sweep cleanup",
+            key_hint: "R",
+            action: Action::StartSweep,
+        },
+        PaletteCommand {
+            label: "Cycle sort mode",
+            key_hint: "s",
+            action: Action::CycleWorktreeSortMode,
+        },
+        PaletteCommand {
+            label: "Change base branch",
+            key_hint: "b",
+            action: Action::ShowBaseBranchPicker,
+        },
+        PaletteCommand {
+            label: "Switch project",
+            key_hint: "p",
+            action: Action::ShowProjectPicker,
+        },
+        PaletteCommand {
+            label: "Toggle info panel",
+            key_hint: "i",
+            action: Action::ToggleWorktreeInfo,
+        },
+        PaletteCommand {
+            label: "Toggle git log panel",
+            key_hint: "l",
+            action: Action::ToggleWorktreeLog,
+        },
+        PaletteCommand {
+            label: "Filter worktrees",
+            key_hint: "/",
+            action: Action::EnterFilterMode,
+        },
+        PaletteCommand {
+            label: "Cycle theme",
+            key_hint: "T",
+            action: Action::CycleColorScheme,
+        },
+    ]
 }
 
 /// Build the list of palette commands available in the given context.
@@ -602,93 +701,7 @@ fn palette_commands(ctx: Context, app: &App) -> Vec<PaletteCommand> {
             }
             cmds
         }
-        Context::WorktreeNormal => vec![
-            PaletteCommand {
-                label: "Show help",
-                key_hint: "?",
-                action: Action::ShowHelp,
-            },
-            PaletteCommand {
-                label: "Quit",
-                key_hint: "q",
-                action: Action::Quit,
-            },
-            PaletteCommand {
-                label: "Switch to agents",
-                key_hint: "Tab",
-                action: Action::SwitchTab,
-            },
-            PaletteCommand {
-                label: "Jump to worktree",
-                key_hint: "Enter",
-                action: Action::JumpToSelectedWorktree,
-            },
-            PaletteCommand {
-                label: "Open PR in browser",
-                key_hint: "o",
-                action: Action::OpenPr,
-            },
-            PaletteCommand {
-                label: "Open PR checks",
-                key_hint: "O",
-                action: Action::OpenPrChecks,
-            },
-            PaletteCommand {
-                label: "Add worktree",
-                key_hint: "a",
-                action: Action::AddWorktree,
-            },
-            PaletteCommand {
-                label: "Remove worktree",
-                key_hint: "r",
-                action: Action::RemoveSelectedWorktree,
-            },
-            PaletteCommand {
-                label: "Close mux window",
-                key_hint: "c",
-                action: Action::CloseSelectedWorktreeWindow,
-            },
-            PaletteCommand {
-                label: "Sweep cleanup",
-                key_hint: "R",
-                action: Action::StartSweep,
-            },
-            PaletteCommand {
-                label: "Cycle sort mode",
-                key_hint: "s",
-                action: Action::CycleWorktreeSortMode,
-            },
-            PaletteCommand {
-                label: "Change base branch",
-                key_hint: "b",
-                action: Action::ShowBaseBranchPicker,
-            },
-            PaletteCommand {
-                label: "Switch project",
-                key_hint: "p",
-                action: Action::ShowProjectPicker,
-            },
-            PaletteCommand {
-                label: "Toggle info panel",
-                key_hint: "i",
-                action: Action::ToggleWorktreeInfo,
-            },
-            PaletteCommand {
-                label: "Toggle git log panel",
-                key_hint: "l",
-                action: Action::ToggleWorktreeLog,
-            },
-            PaletteCommand {
-                label: "Filter worktrees",
-                key_hint: "/",
-                action: Action::EnterFilterMode,
-            },
-            PaletteCommand {
-                label: "Cycle theme",
-                key_hint: "T",
-                action: Action::CycleColorScheme,
-            },
-        ],
+        Context::WorktreeNormal => worktree_palette_commands(),
         Context::DiffNormal => {
             let mut cmds = vec![
                 PaletteCommand {
@@ -768,5 +781,25 @@ fn palette_commands(ctx: Context, app: &App) -> Vec<PaletteCommand> {
         ],
         // Don't offer palette in text-entry contexts
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unified_palette_has_no_tab_switch() {
+        let unified = without_tab_switch(worktree_palette_commands(), true);
+        assert!(!unified.iter().any(|c| c.action == Action::SwitchTab));
+        assert!(!unified.iter().any(|c| c.key_hint == "Tab"));
+        assert!(
+            unified
+                .iter()
+                .any(|c| c.action == Action::JumpToSelectedWorktree)
+        );
+
+        let tabs = without_tab_switch(worktree_palette_commands(), false);
+        assert!(tabs.iter().any(|c| c.label == "Switch to agents"));
     }
 }

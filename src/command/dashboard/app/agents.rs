@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ratatui::style::Style;
 
+use crate::config::StatusIcons;
 use crate::github::{CheckSummary, PrSummary};
 use crate::multiplexer::{AgentPane, AgentStatus};
 
@@ -17,6 +18,7 @@ use super::super::ansi;
 use super::super::settings::{load_last_pane_id, save_hide_stale, save_last_pane_id};
 use super::super::sort::SortMode;
 use super::super::spinner::SPINNER_FRAMES;
+use super::super::ui::theme::ThemePalette;
 use super::App;
 use super::worktrees::resolve_project_name;
 use crate::command::pane_history::pane_to_remember;
@@ -25,6 +27,46 @@ use crate::command::pane_history::pane_to_remember;
 pub(crate) struct PaneTarget {
     pub pane_id: String,
     pub window_name: String,
+}
+
+/// Status icon spans of an agent (Agents tab and unified sub-rows): icon in
+/// the status colour, a spinner while working, all dimmed with a sleep mark
+/// when stale.
+pub(crate) fn status_spans(
+    agent: &AgentPane,
+    icons: &StatusIcons,
+    palette: &ThemePalette,
+    spinner_frame: u8,
+    is_stale: bool,
+) -> Vec<(String, Style)> {
+    // Map status enum to icon and color
+    // Background agents keep `Working` but show their own icon and no
+    // spinner: the spinner means an active turn.
+    let (icon, base_color, is_working) = match agent.status {
+        Some(AgentStatus::Working) if agent.background => (icons.background(), palette.info, false),
+        Some(AgentStatus::Working) => (icons.working(), palette.info, true),
+        Some(AgentStatus::Waiting) => (icons.waiting(), palette.accent, false),
+        Some(AgentStatus::Done) => (icons.done(), palette.success, false),
+        None => ("", palette.text, false),
+    };
+
+    let base_style = Style::default().fg(base_color);
+    let mut spans = ansi::parse_tmux_styles(icon, base_style);
+
+    if is_stale {
+        // Override all styling for stale agents
+        let dimmed = Style::default().fg(palette.dimmed);
+        for span in &mut spans {
+            span.1 = dimmed;
+        }
+        spans.push((" \u{f051b}".to_string(), dimmed));
+    } else if is_working {
+        // Add animated spinner when agent is working
+        let spinner = SPINNER_FRAMES[spinner_frame as usize % SPINNER_FRAMES.len()];
+        spans.push((format!(" {}", spinner), base_style));
+    }
+
+    spans
 }
 
 /// Project name shown for an agent pane: the name of the repository its path
@@ -493,48 +535,13 @@ impl App {
     }
 
     pub fn get_status_display(&self, agent: &AgentPane) -> Vec<(String, Style)> {
-        let is_stale = self.is_stale(agent);
-
-        // Map status enum to icon and color
-        // Background agents keep `Working` but show their own icon and no
-        // spinner: the spinner means an active turn.
-        let (icon, base_color, is_working) = match agent.status {
-            Some(AgentStatus::Working) if agent.background => (
-                self.config.status_icons.background(),
-                self.palette.info,
-                false,
-            ),
-            Some(AgentStatus::Working) => {
-                (self.config.status_icons.working(), self.palette.info, true)
-            }
-            Some(AgentStatus::Waiting) => (
-                self.config.status_icons.waiting(),
-                self.palette.accent,
-                false,
-            ),
-            Some(AgentStatus::Done) => {
-                (self.config.status_icons.done(), self.palette.success, false)
-            }
-            None => ("", self.palette.text, false),
-        };
-
-        let base_style = Style::default().fg(base_color);
-        let mut spans = ansi::parse_tmux_styles(icon, base_style);
-
-        if is_stale {
-            // Override all styling for stale agents
-            let dimmed = Style::default().fg(self.palette.dimmed);
-            for span in &mut spans {
-                span.1 = dimmed;
-            }
-            spans.push((" \u{f051b}".to_string(), dimmed));
-        } else if is_working {
-            // Add animated spinner when agent is working
-            let spinner = SPINNER_FRAMES[self.spinner_frame as usize];
-            spans.push((format!(" {}", spinner), base_style));
-        }
-
-        spans
+        status_spans(
+            agent,
+            &self.config.status_icons,
+            &self.palette,
+            self.spinner_frame,
+            self.is_stale(agent),
+        )
     }
 
     /// Extract the worktree name from an agent.

@@ -10,6 +10,8 @@ mod worktrees;
 #[cfg(test)]
 pub(super) use worktrees::resolve_project_name;
 
+#[cfg(test)]
+pub(crate) use agents::status_spans;
 pub use types::*;
 
 use anyhow::Result;

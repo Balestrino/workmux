@@ -1,17 +1,22 @@
 //! Worktree table rendering for the dashboard worktree view.
 
+use std::path::Path;
+
 use ratatui::{
     Frame,
+    buffer::Buffer,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Cell, Paragraph, Row, Table},
+    widgets::{Block, Cell, Paragraph, Row, StatefulWidget, Table, TableState},
 };
 
 use crate::config::WorktreeColumn;
+use crate::multiplexer::AgentPane;
 
 use super::super::agent;
 use super::super::app::{App, WorktreePanels};
+use super::super::unified::DisplayRow;
 use super::super::worktree_info::{InfoDetail, InfoEntry, InfoStatus, OrphanEntry, Tone};
 use super::format;
 use super::format::{
@@ -20,20 +25,17 @@ use super::format::{
 };
 use super::theme::ThemePalette;
 
-/// Render the worktree table in the given area.
+/// Render the worktree table in the given area: one table row per
+/// `app.display_rows` entry, so the selection index is the display-row index.
 pub fn render_worktree_table(f: &mut Frame, app: &mut App, area: Rect) {
-    let show_env_column = app.worktree_info.is_some();
-
     // Don't render headers for an empty table - avoids a visual blink
     // as column widths jump when data arrives on the next frame. Orphan rows
     // are selectable, so they keep the table drawn.
-    if !has_rows(
-        app.worktrees.len(),
-        visible_orphan_count(app, show_env_column),
-    ) {
+    if !has_rows(app.display_rows.len()) {
         return;
     }
 
+    let show_env_column = app.worktree_info.is_some();
     let show_check_counts = app.config.dashboard.show_check_counts();
 
     let worktree_max_width = worktree_width_budget(area.width);
@@ -47,132 +49,45 @@ pub fn render_worktree_table(f: &mut Frame, app: &mut App, area: Rect) {
         &app.config.dashboard.worktree_columns(),
         show_pr_column,
         show_env_column,
+        app.unified,
     );
     let show_pr_column = columns.contains(&WorktreeColumn::Pr);
+    let budget = RowBudget {
+        show_pr_column,
+        show_check_counts,
+        worktree_max_width,
+    };
 
-    // Pre-compute row data
-    let mut row_data: Vec<_> = app
-        .worktrees
+    let row_data: Vec<WorktreeRowData> = app
+        .display_rows
         .iter()
-        .enumerate()
-        .map(|(idx, wt)| {
-            let jump_key = if idx < 9 {
-                format!("{}", idx + 1)
-            } else {
-                String::new()
-            };
-
-            let project = app.project_for(&wt.repo_key, &wt.path);
-
-            // Main worktree: show branch name (handle is just the repo dir name)
-            // Other worktrees: show branch inline when it differs from the handle
-            let worktree_display = if wt.is_main {
-                wt.branch.clone()
-            } else if wt.branch != wt.handle {
-                format!("{} \u{2192}{}", wt.handle, wt.branch)
-            } else {
-                wt.handle.clone()
-            };
-            let worktree_display = if app.removals.contains(&wt.path) {
-                let frames = super::super::spinner::SPINNER_FRAMES;
-                let spinner = frames[app.spinner_frame as usize % frames.len()];
-                format!(
-                    "{spinner} Deleting {}",
-                    truncate(&worktree_display, worktree_max_width.saturating_sub(11))
-                )
-            } else {
-                truncate(&worktree_display, worktree_max_width)
-            };
-
-            // Git status
-            let git_status = app.git_statuses.get(&wt.path);
-            let git_spans = format_git_status(git_status, app.spinner_frame, &app.palette);
-
-            let pr_title = wt
-                .pr_info
-                .as_ref()
-                .map(|pr| pr.title.clone())
-                .unwrap_or_default();
-            let pr_issues = format::format_pr_issues(wt.pr_info.as_ref());
-
-            // PR status (only computed if column is shown)
-            let pr_spans = if show_pr_column {
-                format_pr_status(
-                    wt.pr_info.as_ref(),
-                    app.get_checks_for_worktree(wt),
-                    show_check_counts,
-                    app.spinner_frame,
-                    &app.palette,
-                )
-            } else {
-                Vec::new()
-            };
-
-            // Agent status summary
-            let agent_spans = format_agent_status_summary(
-                wt.agent_status.as_ref(),
-                &app.config.status_icons,
-                app.spinner_frame,
-                &app.palette,
-                AgentStatusFormat::TableCell,
-            );
-
-            let is_current = app.current_worktree.as_ref().is_some_and(|cwd| {
-                if let (Ok(cwd_canonical), Ok(wt_canonical)) =
-                    (cwd.canonicalize(), wt.path.canonicalize())
-                {
-                    cwd_canonical == wt_canonical
-                } else {
-                    wt.path == *cwd
+        .map(|row| {
+            match row {
+                DisplayRow::Worktree(idx) => app
+                    .worktrees
+                    .get(*idx)
+                    .map(|wt| worktree_row_data(app, *idx, wt, &budget)),
+                DisplayRow::Orphan(idx) => app
+                    .visible_orphans
+                    .get(*idx)
+                    .map(|orphan| orphan_row(orphan, &app.palette, worktree_max_width)),
+                DisplayRow::Agent { pane_id, parent } => app
+                    .host_agents
+                    .iter()
+                    .find(|agent| &agent.pane_id == pane_id)
+                    .map(|agent| spanning_row_data(agent_row_line(app, agent, parent.is_none()))),
+                DisplayRow::OutsideHeader => {
+                    Some(spanning_row_data(outside_header_line(&app.palette)))
                 }
-            });
-
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let age = wt
-                .created_at
-                .map(|ts| agent::format_age(now.saturating_sub(ts)));
-
-            let info = app.worktree_info_index.by_path.get(&wt.path);
-            let (env_text, env_style) = env_cell(info, &app.palette);
-
-            WorktreeRowData {
-                jump_key,
-                project,
-                worktree_display,
-                is_main: wt.is_main,
-                is_current,
-                git_spans,
-                pr_spans,
-                pr_title,
-                pr_issues,
-                agent_line: format::spans_to_line(agent_spans),
-                has_mux_window: wt.has_mux_window,
-                age: age.unwrap_or_default(),
-                env_text,
-                env_style,
-                env_id: info.and_then(|entry| entry.id.clone()),
-                env_details: info
-                    .map(|entry| detail_pairs(&entry.details))
-                    .unwrap_or_default(),
-                base_spans: base_spans(git_status, &app.palette),
-                is_orphan: false,
             }
+            // A row whose entry vanished before the next rebuild stays
+            // blank, so the rows below keep their index.
+            .unwrap_or_else(|| spanning_row_data(Line::default()))
         })
         .collect();
 
-    // Orphan rows (environments whose worktree is gone) follow the real rows.
-    if show_env_column {
-        row_data.extend(
-            app.visible_orphans
-                .iter()
-                .map(|orphan| orphan_row(orphan, &app.palette, worktree_max_width)),
-        );
-    }
-
     let columns = drop_empty_env_columns(columns, &row_data);
+    let spanning = spanning_lines(&row_data);
     let table = build_worktree_table(
         &columns,
         row_data,
@@ -188,21 +103,144 @@ pub fn render_worktree_table(f: &mut Frame, app: &mut App, area: Rect) {
             pr_fetching: app.is_pr_fetching(),
         },
     );
-    f.render_stateful_widget(table, area, &mut app.worktree_table_state);
+    render_rows(
+        f.buffer_mut(),
+        area,
+        table,
+        &mut app.worktree_table_state,
+        &spanning,
+    );
 }
 
-/// Orphan rows drawn for the current view (none without a provider report).
-fn visible_orphan_count(app: &App, show_env_column: bool) -> usize {
-    if show_env_column {
-        app.visible_orphans.len()
+/// Per-frame settings shared by every worktree row.
+#[derive(Clone, Copy)]
+struct RowBudget {
+    show_pr_column: bool,
+    show_check_counts: bool,
+    worktree_max_width: usize,
+}
+
+/// Cells of the worktree at visible index `idx`.
+fn worktree_row_data(
+    app: &App,
+    idx: usize,
+    wt: &crate::workflow::types::WorktreeInfo,
+    budget: &RowBudget,
+) -> WorktreeRowData {
+    let RowBudget {
+        show_pr_column,
+        show_check_counts,
+        worktree_max_width,
+    } = *budget;
+    let jump_key = if idx < 9 {
+        format!("{}", idx + 1)
     } else {
-        0
+        String::new()
+    };
+
+    let project = app.project_for(&wt.repo_key, &wt.path);
+
+    // Main worktree: show branch name (handle is just the repo dir name)
+    // Other worktrees: show branch inline when it differs from the handle
+    let worktree_display = if wt.is_main {
+        wt.branch.clone()
+    } else if wt.branch != wt.handle {
+        format!("{} \u{2192}{}", wt.handle, wt.branch)
+    } else {
+        wt.handle.clone()
+    };
+    let worktree_display = if app.removals.contains(&wt.path) {
+        let frames = super::super::spinner::SPINNER_FRAMES;
+        let spinner = frames[app.spinner_frame as usize % frames.len()];
+        format!(
+            "{spinner} Deleting {}",
+            truncate(&worktree_display, worktree_max_width.saturating_sub(11))
+        )
+    } else {
+        truncate(&worktree_display, worktree_max_width)
+    };
+
+    // Git status
+    let git_status = app.git_statuses.get(&wt.path);
+    let git_spans = format_git_status(git_status, app.spinner_frame, &app.palette);
+
+    let pr_title = wt
+        .pr_info
+        .as_ref()
+        .map(|pr| pr.title.clone())
+        .unwrap_or_default();
+    let pr_issues = format::format_pr_issues(wt.pr_info.as_ref());
+
+    // PR status (only computed if column is shown)
+    let pr_spans = if show_pr_column {
+        format_pr_status(
+            wt.pr_info.as_ref(),
+            app.get_checks_for_worktree(wt),
+            show_check_counts,
+            app.spinner_frame,
+            &app.palette,
+        )
+    } else {
+        Vec::new()
+    };
+
+    // Agent status summary
+    let agent_spans = format_agent_status_summary(
+        wt.agent_status.as_ref(),
+        &app.config.status_icons,
+        app.spinner_frame,
+        &app.palette,
+        AgentStatusFormat::TableCell,
+    );
+
+    let is_current = app.current_worktree.as_ref().is_some_and(|cwd| {
+        if let (Ok(cwd_canonical), Ok(wt_canonical)) = (cwd.canonicalize(), wt.path.canonicalize())
+        {
+            cwd_canonical == wt_canonical
+        } else {
+            wt.path == *cwd
+        }
+    });
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let age = wt
+        .created_at
+        .map(|ts| agent::format_age(now.saturating_sub(ts)));
+
+    let info = app.worktree_info_index.by_path.get(&wt.path);
+    let (env_text, env_style) = env_cell(info, &app.palette);
+
+    WorktreeRowData {
+        jump_key,
+        project,
+        worktree_display,
+        is_main: wt.is_main,
+        is_current,
+        git_spans,
+        pr_spans,
+        pr_title,
+        pr_issues,
+        agent_line: format::spans_to_line(agent_spans),
+        has_mux_window: wt.has_mux_window,
+        age: age.unwrap_or_default(),
+        env_text,
+        env_style,
+        env_id: info.and_then(|entry| entry.id.clone()),
+        env_details: info
+            .map(|entry| detail_pairs(&entry.details))
+            .unwrap_or_default(),
+        base_spans: base_spans(git_status, &app.palette),
+        is_orphan: false,
+        spanning: None,
     }
 }
 
-/// Whether the table has anything to draw: worktree rows or orphan rows.
-fn has_rows(worktree_count: usize, orphan_count: usize) -> bool {
-    worktree_count + orphan_count > 0
+/// Whether the table has anything to draw (orphan rows alone count).
+fn has_rows(row_count: usize) -> bool {
+    row_count > 0
 }
 
 struct WorktreeRowData {
@@ -225,6 +263,9 @@ struct WorktreeRowData {
     env_details: Vec<(String, String)>,
     base_spans: Vec<(String, Style)>,
     is_orphan: bool,
+    /// Agent sub-row or group header: one line drawn across the whole row
+    /// instead of the column cells.
+    spanning: Option<Line<'static>>,
 }
 
 /// Longest value shown in an `env:<label>` cell; the info panel keeps it whole.
@@ -391,15 +432,166 @@ fn orphan_row(
         env_details: detail_pairs(&orphan.details),
         base_spans: Vec::new(),
         is_orphan: true,
+        spanning: None,
+    }
+}
+
+/// Text of an agent sub-row: `└ `, the status icon (Agents tab rules), the
+/// elapsed time, the pane title and, in the outside group, the directory.
+/// A stale agent is drawn dimmed.
+fn agent_line(
+    status: Vec<(String, Style)>,
+    elapsed: Option<Line<'static>>,
+    title: &str,
+    dir: Option<&str>,
+    stale: bool,
+    palette: &ThemePalette,
+) -> Line<'static> {
+    let dimmed = Style::default().fg(palette.dimmed);
+    let restyle = |style: Style| if stale { dimmed } else { style };
+    let mut spans = vec![Span::styled("\u{2514} ", dimmed)];
+    if status.iter().any(|(text, _)| !text.is_empty()) {
+        spans.extend(
+            status
+                .into_iter()
+                .map(|(text, style)| Span::styled(text, restyle(style))),
+        );
+        spans.push(Span::raw(" "));
+    }
+    if let Some(elapsed) = elapsed {
+        spans.extend(
+            elapsed
+                .spans
+                .into_iter()
+                .map(|span| Span::styled(span.content, restyle(span.style))),
+        );
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(
+        title.to_string(),
+        restyle(Style::default().fg(palette.text)),
+    ));
+    if let Some(dir) = dir {
+        spans.push(Span::styled(format!(" ({dir})"), dimmed));
+    }
+    Line::from(spans)
+}
+
+/// Directory with `$HOME` shortened to `~`.
+fn short_dir(path: &Path, home: Option<&Path>) -> String {
+    match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
+/// Sub-row line of `agent` from the App's Agents-tab status helpers.
+fn agent_row_line(app: &App, agent: &AgentPane, outside: bool) -> Line<'static> {
+    let elapsed = app
+        .get_elapsed(agent)
+        .map(|secs| format::elapsed_time_line(app.format_duration(secs), Some(secs), &app.palette));
+    let dir = outside.then(|| short_dir(&agent.path, home::home_dir().as_deref()));
+    agent_line(
+        app.get_status_display(agent),
+        elapsed,
+        &super::dashboard::agent_title(agent),
+        dir.as_deref(),
+        app.is_stale(agent),
+        &app.palette,
+    )
+}
+
+const OUTSIDE_HEADER: &str = "Outside worktrees";
+
+/// The "Outside worktrees" group header.
+fn outside_header_line(palette: &ThemePalette) -> Line<'static> {
+    Line::from(Span::styled(
+        OUTSIDE_HEADER,
+        Style::default()
+            .fg(palette.dimmed)
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
+/// Row data of a row drawn as one line across the table: an agent sub-row
+/// or the group header. Its empty cells leave the column widths alone.
+fn spanning_row_data(line: Line<'static>) -> WorktreeRowData {
+    WorktreeRowData {
+        jump_key: String::new(),
+        project: String::new(),
+        worktree_display: String::new(),
+        is_main: false,
+        is_current: false,
+        git_spans: Vec::new(),
+        pr_spans: Vec::new(),
+        pr_title: String::new(),
+        pr_issues: String::new(),
+        agent_line: Line::default(),
+        has_mux_window: false,
+        age: String::new(),
+        env_text: String::new(),
+        env_style: Style::default(),
+        env_id: None,
+        env_details: Vec::new(),
+        base_spans: Vec::new(),
+        is_orphan: false,
+        spanning: Some(line),
+    }
+}
+
+/// Lines of the spanning rows, by row index.
+fn spanning_lines(rows: &[WorktreeRowData]) -> Vec<(usize, Line<'static>)> {
+    rows.iter()
+        .enumerate()
+        .filter_map(|(index, row)| row.spanning.clone().map(|line| (index, line)))
+        .collect()
+}
+
+/// Width of the highlight symbol (`▌ `) the table reserves while a row is
+/// selected.
+const HIGHLIGHT_SYMBOL_WIDTH: u16 = 2;
+
+/// Render the table, then draw each spanning row's line across the row, from
+/// the first column to the right edge. A table cell would clip it to the
+/// first column. The line keeps the row's background (highlight included).
+fn render_rows(
+    buf: &mut Buffer,
+    area: Rect,
+    table: Table<'static>,
+    state: &mut TableState,
+    spanning: &[(usize, Line<'static>)],
+) {
+    StatefulWidget::render(table, area, buf, state);
+    let gutter = if state.selected().is_some() {
+        HIGHLIGHT_SYMBOL_WIDTH
+    } else {
+        0
+    };
+    let body_y = area.y.saturating_add(1);
+    let body_rows = usize::from(area.height.saturating_sub(1));
+    let offset = state.offset();
+    for (index, line) in spanning {
+        let Some(visible) = index.checked_sub(offset).filter(|v| *v < body_rows) else {
+            continue;
+        };
+        let y = body_y + visible as u16;
+        let x = area.x.saturating_add(gutter);
+        let width = area.width.saturating_sub(gutter);
+        for column in x..x.saturating_add(width) {
+            buf[(column, y)].set_symbol(" ");
+        }
+        buf.set_line(x, y, line, width);
     }
 }
 
 /// Hide PR and Env until their data is available. A hidden column is dropped
 /// unless that would blank the table.
-fn visible_columns(
+pub(super) fn visible_columns(
     configured: &[WorktreeColumn],
     show_pr_column: bool,
     show_env_column: bool,
+    unified: bool,
 ) -> Vec<WorktreeColumn> {
     let visible: Vec<_> = configured
         .iter()
@@ -407,8 +599,21 @@ fn visible_columns(
         .filter(|column| **column != WorktreeColumn::Env || show_env_column)
         .cloned()
         .collect();
-    if visible.is_empty() {
+    let visible = if visible.is_empty() {
         configured.to_vec()
+    } else {
+        visible
+    };
+    if !unified {
+        return visible;
+    }
+    // The unified view's agent sub-rows replace the agent summary column.
+    let visible: Vec<_> = visible
+        .into_iter()
+        .filter(|column| *column != WorktreeColumn::Agent)
+        .collect();
+    if visible.is_empty() {
+        vec![WorktreeColumn::Worktree]
     } else {
         visible
     }
@@ -667,6 +872,11 @@ fn build_worktree_table(
     let rows: Vec<_> = row_data
         .into_iter()
         .map(|data| {
+            // Agent sub-rows and the group header: the line in the first
+            // cell, the rest empty (`render_rows` draws it across the row).
+            if let Some(line) = data.spanning {
+                return Row::new(vec![Cell::from(line)]);
+            }
             let cells: Vec<_> = columns
                 .iter()
                 .map(|column| worktree_cell(column, &data, palette))
@@ -1090,8 +1300,10 @@ fn git_log_text<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{DEFAULT_WORKTREE_COLUMNS, ThemeConfig, ThemeMode};
-    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, widgets::TableState};
+    use crate::command::dashboard::app::status_spans;
+    use crate::config::{DEFAULT_WORKTREE_COLUMNS, StatusIcons, ThemeConfig, ThemeMode};
+    use crate::multiplexer::{AgentPane, AgentStatus};
+    use ratatui::{Terminal, backend::TestBackend};
 
     fn palette() -> ThemePalette {
         ThemePalette::from_config(&ThemeConfig::default(), ThemeMode::Dark)
@@ -1117,6 +1329,7 @@ mod tests {
             env_details: Vec::new(),
             base_spans: Vec::new(),
             is_orphan: false,
+            spanning: None,
         }
     }
 
@@ -1186,6 +1399,8 @@ mod tests {
         selected: Option<usize>,
     ) -> Buffer {
         let palette = palette();
+        let spanning = spanning_lines(&rows);
+        let rows_len = rows.len();
         let table = build_worktree_table(
             columns,
             rows,
@@ -1199,10 +1414,14 @@ mod tests {
                 pr_fetching: false,
             },
         );
-        let mut terminal = Terminal::new(TestBackend::new(width, 4)).unwrap();
+        let height = (rows_len as u16 + 1).max(4);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let mut state = TableState::default().with_selected(selected);
         terminal
-            .draw(|f| f.render_stateful_widget(table, f.area(), &mut state))
+            .draw(|f| {
+                let area = f.area();
+                render_rows(f.buffer_mut(), area, table, &mut state, &spanning);
+            })
             .unwrap();
         assert_eq!(state.selected(), selected);
         terminal.backend().buffer().clone()
@@ -1296,9 +1515,8 @@ mod tests {
 
     #[test]
     fn orphans_alone_keep_the_table_drawn() {
-        assert!(!has_rows(0, 0));
-        assert!(has_rows(0, 1));
-        assert!(has_rows(2, 0));
+        assert!(!has_rows(0));
+        assert!(has_rows(1));
         // Orphans only (no worktree rows) still produce a table with a row.
         let palette = palette();
         let rows = vec![orphan_row(&orphan(), &palette, 25)];
@@ -1325,7 +1543,7 @@ mod tests {
 
     #[test]
     fn worktree_table_preserves_default_layout() {
-        let columns = visible_columns(&DEFAULT_WORKTREE_COLUMNS, true, false);
+        let columns = visible_columns(&DEFAULT_WORKTREE_COLUMNS, true, false, false);
         let buffer = render(&columns, vec![row()], 80, None);
         assert_eq!(
             line(&buffer, 0),
@@ -1386,7 +1604,7 @@ mod tests {
     #[test]
     fn trailing_agent_fills_after_pr_is_hidden() {
         use WorktreeColumn::*;
-        let columns = visible_columns(&[Agent, Pr], false, false);
+        let columns = visible_columns(&[Agent, Pr], false, false, false);
         assert_eq!(columns, [Agent]);
         let mut data = row();
         data.agent_line = Line::from("working").right_aligned();
@@ -1398,17 +1616,22 @@ mod tests {
     fn pr_visibility_preserves_order_and_pr_only_fallback() {
         use WorktreeColumn::*;
         assert_eq!(
-            visible_columns(&[Agent, Pr, Worktree], false, false),
+            visible_columns(&[Agent, Pr, Worktree], false, false, false),
             [Agent, Worktree]
         );
         assert_eq!(
-            visible_columns(&[Agent, Pr, Worktree], true, false),
+            visible_columns(&[Agent, Pr, Worktree], true, false, false),
             [Agent, Pr, Worktree]
         );
-        assert_eq!(visible_columns(&[Pr], false, false), [Pr]);
+        assert_eq!(visible_columns(&[Pr], false, false, false), [Pr]);
         let mut data = row();
         data.pr_spans = format_pr_status(None, None, false, 0, &palette());
-        let buffer = render(&visible_columns(&[Pr], false, false), vec![data], 20, None);
+        let buffer = render(
+            &visible_columns(&[Pr], false, false, false),
+            vec![data],
+            20,
+            None,
+        );
         assert_eq!(line(&buffer, 0), "PR");
         assert_eq!(line(&buffer, 1), "-");
     }
@@ -1473,14 +1696,14 @@ mod tests {
     fn env_column_hidden_without_report() {
         use WorktreeColumn::*;
         assert_eq!(
-            visible_columns(&[Worktree, Env, Mux], false, false),
+            visible_columns(&[Worktree, Env, Mux], false, false, false),
             [Worktree, Mux]
         );
         assert_eq!(
-            visible_columns(&[Worktree, Env, Mux], false, true),
+            visible_columns(&[Worktree, Env, Mux], false, true, false),
             [Worktree, Env, Mux]
         );
-        let columns = visible_columns(&DEFAULT_WORKTREE_COLUMNS, true, false);
+        let columns = visible_columns(&DEFAULT_WORKTREE_COLUMNS, true, false, false);
         let buffer = render(&columns, vec![row()], 80, None);
         assert!(!line(&buffer, 0).contains("Env"));
     }
@@ -1786,5 +2009,167 @@ mod tests {
         let first = line(&buffer, 1);
         assert!(first.contains("dd4b4587"), "{first:?}");
         assert!(first.contains("worktree-missing"), "{first:?}");
+    }
+
+    // ── Unified view: agent sub-rows and the outside group ──────────
+
+    fn agent_pane(title: &str, status: Option<AgentStatus>, path: &str) -> AgentPane {
+        AgentPane {
+            session: "s".into(),
+            window_name: "w".into(),
+            pane_id: "%1".into(),
+            window_id: String::new(),
+            window_index: None,
+            path: path.into(),
+            pane_title: Some(title.into()),
+            status,
+            status_ts: None,
+            activity_ts: None,
+            updated_ts: None,
+            window_cmd: None,
+            agent_command: None,
+            agent_kind: None,
+            prompt: None,
+            background: false,
+        }
+    }
+
+    fn working_line(dir: Option<&str>, stale: bool) -> Line<'static> {
+        let palette = palette();
+        let agent = agent_pane("Fork workmux", Some(AgentStatus::Working), "/ws/a");
+        let status = status_spans(&agent, &StatusIcons::default(), &palette, 0, stale);
+        let elapsed = format::elapsed_time_line("00:01:05".into(), Some(65), &palette);
+        agent_line(status, Some(elapsed), "Fork workmux", dir, stale, &palette)
+    }
+
+    #[test]
+    fn agent_row_shows_indent_icon_and_title() {
+        let columns = visible_columns(&DEFAULT_WORKTREE_COLUMNS, true, false, true);
+        let rows = vec![row(), spanning_row_data(working_line(None, false))];
+        let buffer = render(&columns, rows, 80, None);
+        // The text spans the row, past the narrow `#` column it starts in.
+        let text = line(&buffer, 2);
+        assert!(text.starts_with("\u{2514} "), "{text:?}");
+        assert!(text.contains(StatusIcons::default().working()), "{text:?}");
+        assert!(text.contains("00:01:05"), "{text:?}");
+        assert!(text.contains("Fork workmux"), "{text:?}");
+        assert!(!text.contains("(~/"), "{text:?}");
+    }
+
+    #[test]
+    fn selected_agent_row_keeps_the_highlight_symbol() {
+        let columns = visible_columns(&DEFAULT_WORKTREE_COLUMNS, true, false, true);
+        let rows = vec![row(), spanning_row_data(working_line(None, false))];
+        let buffer = render(&columns, rows, 80, Some(1));
+        let text = line(&buffer, 2);
+        assert!(text.starts_with("\u{258c} \u{2514} "), "{text:?}");
+        assert!(text.contains("Fork workmux"), "{text:?}");
+        assert_eq!(buffer[(10, 2)].bg, palette().highlight_row_bg);
+        // The worktree row above is not highlighted.
+        assert!(
+            line(&buffer, 1).starts_with("  1"),
+            "{:?}",
+            line(&buffer, 1)
+        );
+    }
+
+    #[test]
+    fn outside_agent_row_shows_short_dir() {
+        let home = std::path::Path::new("/home/u");
+        assert_eq!(
+            short_dir(std::path::Path::new("/home/u/work/x"), Some(home)),
+            "~/work/x"
+        );
+        assert_eq!(short_dir(home, Some(home)), "~");
+        assert_eq!(
+            short_dir(std::path::Path::new("/srv/x"), Some(home)),
+            "/srv/x"
+        );
+        assert_eq!(
+            short_dir(std::path::Path::new("/home/user2/x"), Some(home)),
+            "/home/user2/x"
+        );
+
+        let columns = visible_columns(&DEFAULT_WORKTREE_COLUMNS, true, false, true);
+        let rows = vec![spanning_row_data(working_line(Some("~/work/x"), false))];
+        let buffer = render(&columns, rows, 80, None);
+        let text = line(&buffer, 1);
+        assert!(text.ends_with("Fork workmux (~/work/x)"), "{text:?}");
+    }
+
+    #[test]
+    fn stale_agent_row_is_dimmed() {
+        let palette = palette();
+        let dimmed = working_line(None, true);
+        assert!(
+            dimmed
+                .spans
+                .iter()
+                .filter(|span| !span.content.trim().is_empty())
+                .all(|span| span.style.fg == Some(palette.dimmed)),
+            "{dimmed:?}"
+        );
+        let live = working_line(None, false);
+        assert!(
+            live.spans
+                .iter()
+                .any(|span| span.content == "Fork workmux" && span.style.fg == Some(palette.text)),
+            "{live:?}"
+        );
+    }
+
+    #[test]
+    fn agent_row_without_status_or_elapsed_has_no_gaps() {
+        let palette = palette();
+        let text: String = agent_line(Vec::new(), None, "shell", None, false, &palette)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(text, "\u{2514} shell");
+    }
+
+    #[test]
+    fn outside_header_row_spans_the_table_dimmed_and_bold() {
+        let palette = palette();
+        let header = outside_header_line(&palette);
+        assert_eq!(header.to_string(), "Outside worktrees");
+        assert!(header.spans.iter().all(|span| {
+            span.style.fg == Some(palette.dimmed)
+                && span
+                    .style
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::BOLD)
+        }));
+        let columns = visible_columns(&DEFAULT_WORKTREE_COLUMNS, true, false, true);
+        let rows = vec![
+            row(),
+            spanning_row_data(header),
+            spanning_row_data(working_line(Some("~/x"), false)),
+        ];
+        let buffer = render(&columns, rows, 80, Some(2));
+        assert_eq!(line(&buffer, 2), "  Outside worktrees");
+        assert_ne!(buffer[(4, 2)].bg, palette.highlight_row_bg);
+        assert!(line(&buffer, 3).starts_with("\u{258c} \u{2514} "));
+    }
+
+    #[test]
+    fn unified_table_omits_agent_column() {
+        use WorktreeColumn::*;
+        let columns = visible_columns(&[Project, Worktree, Agent], false, false, true);
+        assert_eq!(columns, [Project, Worktree]);
+        let buffer = render(&columns, vec![row()], 60, None);
+        assert!(
+            !line(&buffer, 0).contains("Agent"),
+            "{:?}",
+            line(&buffer, 0)
+        );
+
+        // Never an empty table, even when Agent was the only column.
+        assert_eq!(visible_columns(&[Agent], false, false, true), [Worktree]);
+
+        let tabs = visible_columns(&[Project, Worktree, Agent], false, false, false);
+        let buffer = render(&tabs, vec![row()], 60, None);
+        assert!(line(&buffer, 0).contains("Agent"), "{:?}", line(&buffer, 0));
     }
 }

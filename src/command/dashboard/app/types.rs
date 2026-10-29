@@ -86,6 +86,8 @@ impl WorktreePanels {
 pub enum MouseRowId {
     Agent(String),
     Worktree(PathBuf),
+    /// An agent sub-row of the unified Worktrees table, by pane id.
+    WorktreeAgent(String),
 }
 
 #[derive(Debug, Clone)]
