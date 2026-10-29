@@ -487,6 +487,7 @@ fn handle_set_status(status: &str, prompt: Option<&str>, ctx: &RpcContext) -> Rp
                     AgentStatus::Working,
                     prompt,
                 ),
+                None,
             );
             crate::command::sidebar::request_refresh_for(&*ctx.mux);
             return RpcResponse::Ok;
@@ -527,6 +528,7 @@ fn handle_set_status(status: &str, prompt: Option<&str>, ctx: &RpcContext) -> Rp
                     None,
                     None,
                     crate::command::set_window_status::prompt_update(config, agent_status, prompt),
+                    None,
                 );
             }
             crate::command::sidebar::request_refresh_for(&*ctx.mux);
@@ -549,6 +551,7 @@ fn handle_set_title(title: &str, ctx: &RpcContext) -> RpcResponse {
                 Some(title.to_string()),
                 None,
                 crate::state::PromptUpdate::Keep,
+                None,
             );
             crate::command::sidebar::request_refresh_for(&*ctx.mux);
             RpcResponse::Ok

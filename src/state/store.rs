@@ -1610,6 +1610,7 @@ mod tests {
         AgentState {
             pane_key: key,
             workdir: PathBuf::from("/home/user/project"),
+            cwd: None,
             status: Some(AgentStatus::Working),
             status_ts: Some(1234567890),
             activity_ts: Some(1234567890),

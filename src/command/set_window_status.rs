@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{IsTerminal, Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::warn;
 
 use crate::config::Config;
@@ -98,6 +98,7 @@ pub fn run(cmd: SetWindowStatusCommand) -> Result<()> {
             pane_id,
             hook.as_ref().and_then(HookInput::session_id),
             hook.as_ref().and_then(HookInput::prompt),
+            hook.as_ref().and_then(HookInput::cwd),
         )
     })
 }
@@ -130,6 +131,7 @@ pub fn register_agent() -> Result<()> {
                 .and_then(HookInput::session_id)
                 .map(str::to_string),
             prompt,
+            hook.as_ref().and_then(HookInput::cwd),
         );
         crate::command::sidebar::request_refresh_for(mux);
         Ok(())
@@ -196,6 +198,7 @@ fn apply_status_update(
     pane_id: &str,
     agent_session_id: Option<&str>,
     prompt: Option<&str>,
+    cwd: Option<PathBuf>,
 ) -> Result<()> {
     match cmd {
         SetWindowStatusCommand::Clear => {
@@ -234,6 +237,7 @@ fn apply_status_update(
                 None,
                 agent_session_id.map(str::to_string),
                 prompt_update(config, status, prompt),
+                cwd,
             );
         }
     }
@@ -311,6 +315,9 @@ struct HookInput {
         deserialize_with = "lenient_string"
     )]
     initial_prompt: Option<String>,
+    /// Agent's current directory (Claude, Codex). Follows the agent's `cd`.
+    #[serde(default, deserialize_with = "lenient_string")]
+    cwd: Option<String>,
 }
 
 fn lenient_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -326,6 +333,14 @@ where
 impl HookInput {
     fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref().filter(|value| !value.is_empty())
+    }
+
+    /// Reported current directory, when absolute.
+    fn cwd(&self) -> Option<PathBuf> {
+        self.cwd
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
     }
 
     /// Prompt text submitted by the user to the top-level agent. Delegated
@@ -718,6 +733,7 @@ mod tests {
                 pane_id: pane_id.to_string(),
             },
             workdir: std::path::PathBuf::from("/repo"),
+            cwd: None,
             status: Some(AgentStatus::Working),
             status_ts: Some(1),
             activity_ts: Some(1),
@@ -801,6 +817,23 @@ mod tests {
         assert_eq!(empty.session_id(), None);
         assert_eq!(empty.transcript_path(), None);
         assert!(parse_hook_input("not json").is_none());
+    }
+
+    #[test]
+    fn hook_cwd_is_read_when_absolute() {
+        let hook = parse_hook_input(r#"{"session_id":"s","cwd":"/ws/repo/feature"}"#).unwrap();
+        assert_eq!(
+            hook.cwd(),
+            Some(std::path::PathBuf::from("/ws/repo/feature"))
+        );
+        for input in [
+            r#"{"cwd":""}"#,
+            r#"{"cwd":"relative/dir"}"#,
+            r#"{"cwd":7}"#,
+            r#"{}"#,
+        ] {
+            assert_eq!(parse_hook_input(input).unwrap().cwd(), None, "{input}");
+        }
     }
 
     #[test]
@@ -1135,6 +1168,7 @@ mod tests {
             agent_id: None,
             subagent_type: None,
             initial_prompt: None,
+            cwd: None,
         };
 
         assert!(continuation_owns_ancestry_pane(
@@ -1159,6 +1193,7 @@ mod tests {
             agent_id: None,
             subagent_type: None,
             initial_prompt: None,
+            cwd: None,
         };
         assert!(!continuation_owns_ancestry_pane(
             &agents,

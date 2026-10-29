@@ -223,6 +223,7 @@ mod tests {
                 pane_id: format!("%{updated_ts}"),
             },
             workdir: PathBuf::from("/repo/worktree"),
+            cwd: None,
             status: None,
             status_ts: None,
             activity_ts: Some(updated_ts),

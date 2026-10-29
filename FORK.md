@@ -45,6 +45,13 @@ Changes are not proposed upstream.
 - **Full-height worktree table**: the Worktrees tab starts with the table
   alone; `i` toggles the info panel and `l` the git log panel under it
   (upstream always shows both). Panels are closed again at every start.
+- **Agents located by their reported directory**: status hooks store the
+  `cwd` that Claude and Codex pass on every event as the agent's `cwd`, next
+  to the pane's `workdir`. Everything that locates an agent (Worktrees `Agent`
+  column, Agents tab project/worktree, sidebar, `workmux status` `workdir`,
+  worktree-targeted commands) follows that directory, so an agent started in
+  `~` shows up on the worktree it `cd`s into. Resurrection still resumes in
+  the pane's `workdir`, where the agent session was started.
 
 Design and plan: `docs/superpowers/`.
 

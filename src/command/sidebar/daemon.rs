@@ -4765,6 +4765,7 @@ mod tests {
             let state = crate::state::AgentState {
                 pane_key: pane_key(pane_id),
                 workdir: PathBuf::from("/tmp"),
+                cwd: None,
                 status: Some(AgentStatus::Working),
                 status_ts: Some(status_ts),
                 activity_ts: Some(status_ts),
