@@ -9,6 +9,7 @@ pub mod store;
 pub(crate) mod test_support;
 mod types;
 
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tracing::warn;
@@ -40,6 +41,8 @@ pub enum PromptUpdate {
 ///   falling back to the live pane title.
 /// - If `agent_session_id` is Some, uses it. If None, preserves the existing binding.
 /// - `prompt` keeps, replaces or removes the stored prompt.
+/// - If `cwd` (the agent's reported directory) is Some, uses it. If None,
+///   preserves the existing one.
 ///
 /// Logs warnings on failure without propagating errors (best-effort persistence).
 pub fn persist_agent_update(
@@ -49,6 +52,7 @@ pub fn persist_agent_update(
     title_override: Option<String>,
     agent_session_id: Option<String>,
     prompt: PromptUpdate,
+    cwd: Option<PathBuf>,
 ) {
     if status == Some(AgentStatus::Working) && mux.name() == "tmux" {
         let tmux = crate::multiplexer::TmuxBackend::for_socket(&mux.instance_id());
@@ -63,6 +67,7 @@ pub fn persist_agent_update(
         title_override,
         agent_session_id,
         prompt,
+        cwd,
         true,
     );
 }
@@ -77,8 +82,18 @@ pub fn persist_agent_registration(
     pane_id: &str,
     agent_session_id: Option<String>,
     prompt: PromptUpdate,
+    cwd: Option<PathBuf>,
 ) {
-    persist_agent_snapshot(mux, pane_id, None, None, agent_session_id, prompt, false);
+    persist_agent_snapshot(
+        mux,
+        pane_id,
+        None,
+        None,
+        agent_session_id,
+        prompt,
+        cwd,
+        false,
+    );
 }
 
 /// Clear an agent's persisted status without deleting its state record.
@@ -106,6 +121,7 @@ pub fn clear_agent_status(mux: &dyn Multiplexer, pane_id: &str, clear_prompt: bo
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn persist_agent_snapshot(
     mux: &dyn Multiplexer,
     pane_id: &str,
@@ -113,6 +129,7 @@ fn persist_agent_snapshot(
     title_override: Option<String>,
     agent_session_id: Option<String>,
     prompt: PromptUpdate,
+    cwd: Option<PathBuf>,
     preserve_existing: bool,
 ) {
     let Ok(store) = StateStore::new() else {
@@ -127,6 +144,7 @@ fn persist_agent_snapshot(
             title_override,
             agent_session_id,
             prompt,
+            cwd,
             preserve_existing,
         );
         Ok(())
@@ -144,6 +162,7 @@ fn persist_agent_snapshot_locked(
     title_override: Option<String>,
     agent_session_id: Option<String>,
     prompt: PromptUpdate,
+    cwd: Option<PathBuf>,
     preserve_existing: bool,
 ) {
     let pane_key = PaneKey {
@@ -250,6 +269,7 @@ fn persist_agent_snapshot_locked(
     });
 
     let prompt = resolve_prompt(prompt, existing.as_ref());
+    let cwd = resolve_cwd(cwd, existing.as_ref());
 
     // Snapshot the live title for classification before the resolved
     // `pane_title` consumes `live_info.title`.
@@ -278,6 +298,7 @@ fn persist_agent_snapshot_locked(
     let state = AgentState {
         pane_key,
         workdir: live_info.working_dir,
+        cwd,
         status: final_status,
         status_ts,
         activity_ts,
@@ -306,6 +327,12 @@ fn resolve_prompt(update: PromptUpdate, existing: Option<&AgentState>) -> Option
         PromptUpdate::Set(prompt) => Some(prompt),
         PromptUpdate::Clear => None,
     }
+}
+
+/// Resolve the agent's current directory. Hooks without one (other agents,
+/// sandbox RPC) keep the last reported directory of the same agent process.
+fn resolve_cwd(reported: Option<PathBuf>, existing: Option<&AgentState>) -> Option<PathBuf> {
+    reported.or_else(|| existing.and_then(|state| state.cwd.clone()))
 }
 
 fn resolve_activity_ts(
@@ -390,6 +417,21 @@ mod tests {
             resolve_activity_ts(true, None, None, Some(10), 20),
             Some(10)
         );
+    }
+
+    #[test]
+    fn reported_cwd_wins_and_is_kept_by_writes_without_one() {
+        let mut existing = state_with_prompt("p");
+        existing.cwd = Some("/ws/repo/feature".into());
+        assert_eq!(
+            resolve_cwd(Some("/ws/other".into()), Some(&existing)),
+            Some(std::path::PathBuf::from("/ws/other"))
+        );
+        assert_eq!(
+            resolve_cwd(None, Some(&existing)),
+            Some(std::path::PathBuf::from("/ws/repo/feature"))
+        );
+        assert_eq!(resolve_cwd(None, None), None);
     }
 
     fn state_with_prompt(prompt: &str) -> AgentState {

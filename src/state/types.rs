@@ -75,8 +75,14 @@ pub struct AgentState {
     /// Composite identifier for the pane
     pub pane_key: PaneKey,
 
-    /// Working directory of the agent
+    /// Working directory of the agent's pane. Resurrection resumes the agent
+    /// here, so it is never replaced by `cwd`.
     pub workdir: PathBuf,
+
+    /// Current directory reported by the agent's hooks. Follows the agent's
+    /// `cd`, so it locates the worktree the agent is working in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
 
     /// Current agent status (working, waiting, done)
     pub status: Option<AgentStatus>,
@@ -165,7 +171,7 @@ impl AgentState {
             pane_id: self.pane_key.pane_id.clone(),
             window_id: String::new(),
             window_index: None,
-            path: self.workdir.clone(),
+            path: self.cwd.as_ref().unwrap_or(&self.workdir).clone(),
             pane_title: self.pane_title.clone(),
             status: self.status,
             status_ts: self.status_ts,
@@ -307,6 +313,20 @@ mod tests {
                 .activity_ts,
             Some(100)
         );
+    }
+
+    #[test]
+    fn agent_pane_path_follows_reported_cwd() {
+        let mut state = legacy_state(Some("done"), Some(100), 200);
+        assert_eq!(state.cwd, None);
+        let pane = state.to_agent_pane("main".into(), "wm-test".into());
+        assert_eq!(pane.path, PathBuf::from("/tmp/project"));
+        assert!(serde_json::to_value(&state).unwrap().get("cwd").is_none());
+
+        state.cwd = Some(PathBuf::from("/ws/repo/feature"));
+        let pane = state.to_agent_pane("main".into(), "wm-test".into());
+        assert_eq!(pane.path, PathBuf::from("/ws/repo/feature"));
+        assert_eq!(state.workdir, PathBuf::from("/tmp/project"));
     }
 
     #[test]

@@ -163,6 +163,7 @@ mod tests {
                 pane_id: pane_id.to_string(),
             },
             workdir: PathBuf::from("/tmp"),
+            cwd: None,
             status: Some(status),
             status_ts: Some(status_ts),
             activity_ts: Some(status_ts),
