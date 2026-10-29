@@ -22,6 +22,8 @@ pub const PERSISTENT_MONITOR_SECS: u64 = 86400;
 pub const SHELL_SECS: u64 = 43200;
 /// Most transcript bytes read by one scan, counted back from the end.
 pub const TRANSCRIPT_SCAN_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// Transcript bytes before a launch that its first scan reads again.
+pub const LAUNCH_RESCAN_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -135,17 +137,20 @@ pub fn terminal_task_ids(text: &str) -> Vec<String> {
     };
     let mut ids = Vec::new();
     let mut rest = text.as_str();
-    while let Some(start) = rest.find(NOTIFICATION_OPEN) {
-        let body = &rest[start + NOTIFICATION_OPEN.len()..];
-        let end = body.find(NOTIFICATION_CLOSE).unwrap_or(body.len());
-        let block = &body[..end];
-        if let (Some(id), Some(status)) = (tag_value(block, "task-id"), tag_value(block, "status"))
-            && !id.is_empty()
-            && status != "running"
-        {
-            ids.push(id.to_string());
+    // Each closing tag pairs with the nearest opener before it, so a stray
+    // opener (a literal in quoted code) cannot swallow the block after it.
+    while let Some(end) = rest.find(NOTIFICATION_CLOSE) {
+        if let Some(start) = rest[..end].rfind(NOTIFICATION_OPEN) {
+            let block = &rest[start + NOTIFICATION_OPEN.len()..end];
+            if let (Some(id), Some(status)) =
+                (tag_value(block, "task-id"), tag_value(block, "status"))
+                && !id.is_empty()
+                && status != "running"
+            {
+                ids.push(id.to_string());
+            }
         }
-        rest = &body[end..];
+        rest = &rest[end + NOTIFICATION_CLOSE.len()..];
     }
     ids
 }
@@ -210,9 +215,12 @@ pub fn transition(
                         kind: launch.kind,
                         started_ts: now,
                         expires_ts: launch_expiry(launch, now),
+                        // Start a little before the end: the notification
+                        // of a quick task can land before this hook runs.
+                        // Ids are unique, so rescanning is harmless.
                         transcript_offset: transcript
                             .and_then(|path| std::fs::metadata(path).ok())
-                            .map(|meta| meta.len()),
+                            .map(|meta| meta.len().saturating_sub(LAUNCH_RESCAN_BYTES)),
                     },
                 );
             }
@@ -248,7 +256,15 @@ pub fn transition(
         }
         HookEvent::SubagentStop { agent_id } => {
             if !remove(items, agent_id) {
-                previous.unwrap_or(AgentStatus::Done)
+                // Untracked: a Claude internal agent, or a Codex subagent
+                // whose SubagentStart was missed. The latter must not leave
+                // an idle agent working with nothing live.
+                if !*turn_active && previous == Some(AgentStatus::Working) && !has_live(items, now)
+                {
+                    AgentStatus::Done
+                } else {
+                    previous.unwrap_or(AgentStatus::Done)
+                }
             } else if *turn_active || has_live(items, now) {
                 AgentStatus::Working
             } else {
@@ -268,10 +284,11 @@ pub fn transition(
 }
 
 /// Remove items whose completion was written to the transcript since the
-/// last scan, and advance every remaining offset to the end of the file.
+/// last scan, and advance every remaining offset past the last complete line.
 ///
 /// Reads from the smallest stored offset, but never more than the last
-/// [`TRANSCRIPT_SCAN_MAX_BYTES`]. Any I/O error leaves the items untouched.
+/// [`TRANSCRIPT_SCAN_MAX_BYTES`]. A line still being written is left for the
+/// next scan. Any I/O error, or no complete line, leaves the items untouched.
 fn scan_transcript(items: &mut Vec<BackgroundItem>, transcript: &Path) {
     let Some(from) = items.iter().filter_map(|item| item.transcript_offset).min() else {
         return;
@@ -279,6 +296,9 @@ fn scan_transcript(items: &mut Vec<BackgroundItem>, transcript: &Path) {
     let Ok((end, text)) = read_tail(transcript, from) else {
         return;
     };
+    if text.is_empty() {
+        return;
+    }
     for id in terminal_task_ids(&String::from_utf8_lossy(&text)) {
         remove(items, &id);
     }
@@ -289,8 +309,9 @@ fn scan_transcript(items: &mut Vec<BackgroundItem>, transcript: &Path) {
     }
 }
 
-/// Bytes of `path` from `from` (clamped to the scan window) to the current
-/// end, together with the offset just past them.
+/// Complete lines of `path` from `from` (clamped to the scan window) up to
+/// the last newline, together with the offset just past them. Bytes after the
+/// last newline belong to a line still being written and are not returned.
 fn read_tail(path: &Path, from: u64) -> std::io::Result<(u64, Vec<u8>)> {
     let mut file = File::open(path)?;
     let len = file.metadata()?.len();
@@ -300,6 +321,8 @@ fn read_tail(path: &Path, from: u64) -> std::io::Result<(u64, Vec<u8>)> {
     file.seek(SeekFrom::Start(start))?;
     let mut text = Vec::new();
     file.take(len - start).read_to_end(&mut text)?;
+    let complete = text.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+    text.truncate(complete);
     Ok((start + text.len() as u64, text))
 }
 
@@ -378,6 +401,28 @@ mod tests {
         let escaped = serde_json::to_string(block).unwrap();
         assert!(escaped.contains("\\n"));
         assert_eq!(terminal_task_ids(&escaped), vec!["b1".to_string()]);
+    }
+
+    #[test]
+    fn terminal_task_ids_skips_stray_opener() {
+        // Literals from a session editing this parser: an opener and a task id
+        // that no closing tag follows before the real notifications.
+        let stray = "let open = \"<task-notification>\"; tag_value(\"<task-id>x</task-id>\")\n";
+        let text = format!(
+            "{stray}{}\nnoise\n{}\ntrailing <task-notification>",
+            notification_block("b1", "completed"),
+            notification_block("b2", "failed"),
+        );
+        assert_eq!(
+            terminal_task_ids(&text),
+            vec!["b1".to_string(), "b2".to_string()]
+        );
+    }
+
+    fn notification_block(id: &str, status: &str) -> String {
+        format!(
+            "<task-notification>\n<task-id>{id}</task-id>\n<status>{status}</status>\n</task-notification>"
+        )
     }
 
     // --- transition and transcript scan ---
@@ -558,6 +603,41 @@ mod tests {
     }
 
     #[test]
+    fn untracked_subagent_stop_after_turn_end_is_done() {
+        let stop = || HookEvent::SubagentStop {
+            agent_id: "x".into(),
+        };
+        // Its SubagentStart was missed (or the state predates tracking): a
+        // stored working with an idle turn and nothing live must not stick.
+        let mut agent = Agent {
+            status: Some(AgentStatus::Working),
+            ..Agent::default()
+        };
+        assert_eq!(agent.apply(stop(), None), AgentStatus::Done);
+
+        let mut agent = Agent {
+            status: Some(AgentStatus::Working),
+            items: vec![item("old", 1, NOW)],
+            ..Agent::default()
+        };
+        assert_eq!(agent.apply(stop(), None), AgentStatus::Done);
+
+        // Live background work, or a running turn, keeps working.
+        let mut agent = Agent {
+            status: Some(AgentStatus::Working),
+            items: vec![item("b1", 1, NOW + 10)],
+            ..Agent::default()
+        };
+        assert_eq!(agent.apply(stop(), None), AgentStatus::Working);
+        let mut agent = Agent {
+            status: Some(AgentStatus::Working),
+            turn_active: true,
+            ..Agent::default()
+        };
+        assert_eq!(agent.apply(stop(), None), AgentStatus::Working);
+    }
+
+    #[test]
     fn untracked_subagent_tool_use_after_stop_keeps_previous() {
         let mut agent = Agent::default();
         agent.apply(prompt(None), None);
@@ -600,12 +680,35 @@ mod tests {
         let mut agent = Agent::default();
         agent.apply(prompt(None), Some(path));
         agent.apply(launched("b1", BackgroundKind::Shell), Some(path));
-        let len = std::fs::metadata(path).unwrap().len();
-        assert_eq!(agent.items[0].transcript_offset, Some(len));
+        // A short transcript is rescanned from its start.
+        assert_eq!(agent.items[0].transcript_offset, Some(0));
 
         append(path, &queued_line("b1"));
         assert_eq!(agent.apply(HookEvent::Stop, Some(path)), AgentStatus::Done);
         assert!(agent.items.is_empty());
+    }
+
+    #[test]
+    fn notification_written_before_launch_hook_is_seen() {
+        // The task finished, and its notification was queued, before the
+        // PostToolUse hook that reports its launch ran.
+        let file = transcript_with("{\"type\":\"user\"}\n");
+        let path = file.path();
+        let mut agent = Agent::default();
+        agent.apply(prompt(None), Some(path));
+        append(path, &queued_line("b1"));
+        agent.apply(launched("b1", BackgroundKind::Shell), Some(path));
+        assert_eq!(agent.apply(HookEvent::Stop, Some(path)), AgentStatus::Done);
+        assert!(agent.items.is_empty());
+    }
+
+    #[test]
+    fn launch_offset_rescans_at_most_the_last_64_kib() {
+        let file = transcript_with(&"x".repeat(100 * 1024));
+        let path = file.path();
+        let mut agent = Agent::default();
+        agent.apply(launched("b1", BackgroundKind::Shell), Some(path));
+        assert_eq!(agent.items[0].transcript_offset, Some((100 - 64) * 1024));
     }
 
     #[test]
@@ -661,6 +764,46 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "b1");
         assert_eq!(items[0].transcript_offset, Some(text.len() as u64));
+    }
+
+    #[test]
+    fn scan_waits_for_a_partly_written_line() {
+        let head = "{\"type\":\"user\"}\n";
+        let file = transcript_with(head);
+        let path = file.path();
+        let start = head.len() as u64;
+        let mut items = vec![BackgroundItem {
+            transcript_offset: Some(start),
+            ..item("b1", NOW, NOW + 100)
+        }];
+
+        // The notification line is split across two writes, with no complete
+        // line in between: nothing is consumed.
+        let line = queued_line("b1");
+        let (first, second) = line.split_at(line.len() / 2);
+        append(path, first);
+        scan_transcript(&mut items, path);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].transcript_offset, Some(start));
+
+        // A complete line followed by a partial one: the offset stops after
+        // the complete line, so the partial one is read whole next time.
+        append(path, second);
+        let other = queued_line("b2");
+        append(path, &other[..10]);
+        items.push(BackgroundItem {
+            transcript_offset: Some(start),
+            ..item("b2", NOW, NOW + 100)
+        });
+        scan_transcript(&mut items, path);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "b2");
+        let after_b1 = start + line.len() as u64;
+        assert_eq!(items[0].transcript_offset, Some(after_b1));
+
+        append(path, &other[10..]);
+        scan_transcript(&mut items, path);
+        assert!(items.is_empty());
     }
 
     #[test]
