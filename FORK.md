@@ -105,6 +105,17 @@ upstream behaviour in these points:
   lands one entry to the right there).
 - `GitStatus.outside_repository` (fork) is written only when set, so the
   cached observation of a remote workspace keeps upstream's pinned format.
+- **A status hook stores the state before it sets the window icon**, because
+  the background state decides the icon; upstream sets the icon first. Nothing
+  in the binary depends on the order, but upstream's test helper
+  `mark_agent_state` did (it waited for the state file, then read the window):
+  in the fork it also waits for the command to end.
+- **Expired background work counts as the state the agent was in.** A status
+  write compares against what the agent showed, not the stored `working`: the
+  prompt after an expiry is a new transition with its own timestamp (without
+  it `workmux send --wait` reported `send_stalled`), a late `Stop` keeps the
+  expiry time, and a late tool call of an expired subagent leaves the agent
+  done.
 
 Upstream changes worth knowing when using the fork:
 
@@ -113,9 +124,47 @@ Upstream changes worth knowing when using the fork:
   by their reported directory, a second agent that `cd`s into a worktree is
   enough: target the pane ID (`pane_id` of `workmux status --json`).
 - Remote workspaces, the zellij sidebar and Copilot support come with the
-  merge but are not used or tried here. Remote agents never show the
-  background state, and the unified view lists them without their remote
-  label.
+  merge but are not used or tried here. The unified view shows a remote
+  agent's sub-row with its `handle@remote` label and, when the remote is
+  unreachable or the execution ended, that state; Enter on one that no local
+  pane relays opens its window, as in the Agents tab. Known limit: remote
+  agents never show the background state, because the node's observation
+  carries only the status.
+
+## Checks
+
+`just check` needs `checkle`, `bun`, `ruff` and `pyright`. Without them the
+same checks (`checkle.toml`) can be run by hand; versions as in upstream's CI
+(`.github/workflows/ci.yml`: `ruff==0.14.4`, `bun` 1.3.14):
+
+```bash
+cargo fmt --all -- --check && cargo clippy --all-targets && cargo test --bin workmux
+uv venv tests/venv && uv pip install --python tests/venv/bin/python \
+  -r tests/requirements.txt pyright 'ruff==0.14.4'
+tests/venv/bin/ruff format tests --check && tests/venv/bin/ruff check tests
+(source tests/venv/bin/activate && pyright tests)
+bun test tests/opencode_status_plugin.test.ts tests/pi_status_extension.test.ts \
+  tests/omp_status_extension.test.ts
+bun test tests/opencode_status_plugin_v2.test.ts tests/opencode_status_tracker_v2.test.ts
+(cd docs && bun install --frozen-lockfile && bun run format:check \
+  && node scripts/check-content.mjs)
+```
+
+Integration tests (upstream's, `tests/`, tmux backend) run the debug build at
+`target/debug/workmux` in private tmux servers and temporary homes:
+
+```bash
+cargo build --all
+source tests/venv/bin/activate
+WORKMUX_TEST=1 env -u TMUX -u TMUX_PANE pytest tests/ -n 4 \
+  --ignore=tests/test_sidebar_zellij.py --ignore=tests/test_sidebar_zellij_live.py \
+  --ignore=tests/test_workmux_remote --basetemp=/var/tmp/<short-path>
+```
+
+Keep `--basetemp` short: with a long path the shell prompt wraps and
+`test_terminal_echo` cannot find its marker. The zellij files need zellij;
+`tests/test_workmux_remote` (remote workspaces over a loopback node) filled
+several GB of temporary files within minutes and was not completed here.
 
 ## Installing
 
