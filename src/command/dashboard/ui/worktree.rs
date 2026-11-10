@@ -481,10 +481,13 @@ fn agent_row_line(app: &App, agent: &AgentPane, outside: bool) -> Line<'static> 
         .get_elapsed(agent)
         .map(|secs| format::elapsed_time_line(app.format_duration(secs), Some(secs), &app.palette));
     let dir = outside.then(|| unified::short_dir(&agent.path, home::home_dir().as_deref()));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     agent_line(
         app.get_status_display(agent),
         elapsed,
-        &super::dashboard::agent_title(agent),
+        &unified::sub_row_title(agent, &super::dashboard::agent_title(agent), now),
         dir.as_deref(),
         app.is_stale(agent),
         &app.palette,

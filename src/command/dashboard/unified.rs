@@ -5,7 +5,7 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::multiplexer::{AgentPane, AgentStatus};
+use crate::multiplexer::{AgentPane, AgentStatus, RemoteAgent};
 use crate::util::canon_or_self;
 
 /// One row of the unified view.
@@ -90,12 +90,14 @@ fn sorted_ids(agents: &[AgentPane], mut idx: Vec<usize>) -> Vec<String> {
     idx.into_iter().map(|i| agents[i].pane_id.clone()).collect()
 }
 
-/// Case-insensitive title match; `filter` must already be lowercase.
+/// Case-insensitive match of the title or, for a remote agent, its label;
+/// `filter` must already be lowercase.
 fn title_contains(agent: &AgentPane, filter: &str) -> bool {
     agent
         .pane_title
         .as_deref()
         .is_some_and(|t| t.to_lowercase().contains(filter))
+        || remote_label(agent).is_some_and(|label| label.to_lowercase().contains(filter))
 }
 
 /// Title, raw directory or displayed (`~/…`) directory match.
@@ -192,9 +194,135 @@ pub fn is_selectable(row: &DisplayRow) -> bool {
     !matches!(row, DisplayRow::OutsideHeader)
 }
 
+/// The label of a remote agent, `handle@remote` as the Agents tab shows it.
+fn remote_label(agent: &AgentPane) -> Option<String> {
+    agent
+        .remote
+        .as_ref()
+        .map(|remote| crate::remote::agents::label(&remote.handle, &remote.at.remote))
+}
+
+/// Title an agent's sub-row shows. A remote agent's starts with its label,
+/// then says when the remote is unreachable or its execution ended, as the
+/// Agents tab does; a local agent's is `title` as it is.
+pub fn sub_row_title(agent: &AgentPane, title: &str, now: u64) -> String {
+    let (Some(label), Some(remote)) = (remote_label(agent), agent.remote.as_ref()) else {
+        return title.to_string();
+    };
+    let title = crate::remote::agents::row_title(remote, now, Some(title))
+        .unwrap_or_else(|| title.to_string());
+    if title.is_empty() {
+        label
+    } else {
+        format!("{label} \u{b7} {title}")
+    }
+}
+
+/// Where Enter on an agent's sub-row goes.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AgentJump {
+    /// The agent's pane.
+    Pane(String),
+    /// A remote agent no local pane relays: its window is opened first.
+    Detached(Box<RemoteAgent>),
+}
+
+/// What jumping to the agent in `pane_id` does: a remote agent no local
+/// pane relays has no pane to switch to.
+pub fn agent_jump(agents: &[AgentPane], pane_id: &str) -> AgentJump {
+    agents
+        .iter()
+        .find(|agent| agent.pane_id == pane_id)
+        .filter(|agent| crate::remote::agents::is_detached(agent))
+        .and_then(|agent| agent.remote.clone())
+        .map_or_else(
+            || AgentJump::Pane(pane_id.to_string()),
+            |remote| AgentJump::Detached(Box::new(remote)),
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn remote_agent(id: &str, attached: bool, connected: bool) -> AgentPane {
+        let mut a = agent(id, "/ws/repo/feat-x");
+        a.pane_title = Some("do x".into());
+        a.remote = Some(RemoteAgent {
+            handle: "feat-x".into(),
+            attached,
+            connected,
+            ..RemoteAgent::new(crate::multiplexer::RemoteRef {
+                remote: "devbox".into(),
+                ws_id: "ws1".into(),
+                ex_id: "ex1".into(),
+                pane: 0,
+            })
+        });
+        a
+    }
+
+    #[test]
+    fn a_remote_sub_row_names_its_workspace_and_remote() {
+        let local = agent("%1", "/ws/repo/feat-x");
+        assert_eq!(sub_row_title(&local, "do x", 100), "do x");
+
+        let attached = remote_agent("%2", true, true);
+        assert_eq!(
+            sub_row_title(&attached, "do x", 100),
+            "feat-x@devbox \u{b7} do x"
+        );
+        assert_eq!(sub_row_title(&attached, "", 100), "feat-x@devbox");
+
+        // An unreachable remote says so ahead of the last title, as the
+        // Agents tab does.
+        let lost = remote_agent("%remote-ws1-0", false, false);
+        assert_eq!(
+            sub_row_title(&lost, "do x", 100),
+            "feat-x@devbox \u{b7} disconnected \u{b7} do x"
+        );
+    }
+
+    #[test]
+    fn a_remote_sub_row_matches_the_filter_by_its_label() {
+        let agents = [remote_agent("%2", true, true)];
+        let rows = build_display_rows(&RowInputs {
+            visible_worktrees: &[],
+            all_worktrees: &[],
+            agents: &agents,
+            assignment: &[None],
+            orphan_count: 0,
+            filter: "devbox",
+            outside_group: true,
+            home: None,
+        });
+        assert!(
+            rows.contains(&DisplayRow::Agent {
+                pane_id: "%2".into(),
+                parent: None
+            }),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn jumping_to_a_detached_remote_agent_opens_its_window() {
+        let agents = [
+            agent("%1", "/ws/repo"),
+            remote_agent("%2", true, true),
+            remote_agent("%remote-ws1-0", false, true),
+        ];
+        assert_eq!(agent_jump(&agents, "%1"), AgentJump::Pane("%1".into()));
+        // A pane relays it: that pane is the target.
+        assert_eq!(agent_jump(&agents, "%2"), AgentJump::Pane("%2".into()));
+        // No pane relays it: there is no pane to switch to.
+        assert_eq!(
+            agent_jump(&agents, "%remote-ws1-0"),
+            AgentJump::Detached(Box::new(agents[2].remote.clone().unwrap()))
+        );
+        // An agent that is gone falls back to the pane id.
+        assert_eq!(agent_jump(&agents, "%9"), AgentJump::Pane("%9".into()));
+    }
 
     fn agent(id: &str, path: &str) -> AgentPane {
         AgentPane {

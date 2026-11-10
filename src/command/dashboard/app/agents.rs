@@ -406,7 +406,7 @@ impl App {
     }
 
     /// Open a window relaying a detached remote agent, reporting failure.
-    fn open_detached(&mut self, remote: &RemoteAgent) -> bool {
+    pub(super) fn open_detached(&mut self, remote: &RemoteAgent) -> bool {
         match crate::remote::agents::open_window(remote) {
             Ok(()) => {
                 self.refresh();
