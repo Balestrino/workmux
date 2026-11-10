@@ -200,6 +200,27 @@ impl AgentState {
         }
     }
 
+    /// When the status shown at `now` began: the expiry of the last
+    /// background item once they have all expired (the agent became done
+    /// then), otherwise the stored status timestamp.
+    pub fn effective_status_ts(&self, now: u64) -> Option<u64> {
+        self.expired_at(now).or(self.status_ts)
+    }
+
+    /// Recency timestamp of the state shown at `now`: the expiry as well
+    /// once background work has all expired, otherwise the stored one.
+    pub fn effective_activity_ts(&self, now: u64) -> Option<u64> {
+        self.expired_at(now).or_else(|| self.activity_ts())
+    }
+
+    /// When the last background item expired, if expiry is what made the
+    /// agent done.
+    fn expired_at(&self, now: u64) -> Option<u64> {
+        self.background_expired(now)
+            .then(|| self.background.iter().map(|item| item.expires_ts).max())
+            .flatten()
+    }
+
     /// Whether the stored `Working` only stood for background work that has
     /// all expired by `now`.
     fn background_expired(&self, now: u64) -> bool {
@@ -218,12 +239,6 @@ impl AgentState {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        // Once background work has expired the agent became done when the
-        // last item expired, so its timestamps start there.
-        let expired_at = self
-            .background_expired(now)
-            .then(|| self.background.iter().map(|item| item.expires_ts).max())
-            .flatten();
         AgentPane {
             session,
             window_name,
@@ -233,8 +248,10 @@ impl AgentState {
             path: self.cwd.as_ref().unwrap_or(&self.workdir).clone(),
             pane_title: self.pane_title.clone(),
             status: self.effective_status(now),
-            status_ts: expired_at.or(self.status_ts),
-            activity_ts: expired_at.or_else(|| self.activity_ts()),
+            // Once background work has expired the agent became done when
+            // the last item expired, so its timestamps start there.
+            status_ts: self.effective_status_ts(now),
+            activity_ts: self.effective_activity_ts(now),
             updated_ts: Some(self.updated_ts),
             window_cmd: None,
             agent_command: Some(self.command.clone()),

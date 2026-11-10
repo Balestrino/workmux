@@ -1769,6 +1769,19 @@ impl App {
         }
     }
 
+    /// Jump to an agent: switch to its pane, or open the window of a remote
+    /// agent no local pane relays (as Enter does in the Agents tab).
+    fn jump_to_agent_pane(&mut self, pane_id: &str) {
+        match unified::agent_jump(&self.host_agents, pane_id) {
+            unified::AgentJump::Pane(pane_id) => self.switch_to_pane_and_track(&pane_id),
+            unified::AgentJump::Detached(remote) => {
+                if self.open_detached(&remote) && self.should_close_after_jump() {
+                    self.should_jump = true;
+                }
+            }
+        }
+    }
+
     /// Jump to the selected row's agent or mux window.
     /// An agent sub-row jumps to its pane; a worktree row to its first agent
     /// (sub-row in the unified view, assigned agent otherwise), else falls
@@ -1786,7 +1799,7 @@ impl App {
         }
 
         match enter_target(&self.display_rows, selected) {
-            Some(EnterTarget::Pane(target)) => self.switch_to_pane_and_track(&target),
+            Some(EnterTarget::Pane(target)) => self.jump_to_agent_pane(&target),
             Some(EnterTarget::Worktree(index)) => {
                 let Some(worktree) = self.worktrees.get(index) else {
                     return;
@@ -1799,7 +1812,7 @@ impl App {
                     if let Some(target) =
                         first_agent_in_worktree(&worktree.path, &all, &self.all_agents)
                     {
-                        self.switch_to_pane_and_track(&target);
+                        self.jump_to_agent_pane(&target);
                         return;
                     }
                 }
