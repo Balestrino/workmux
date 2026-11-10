@@ -2,6 +2,7 @@
 
 import json
 import shlex
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -79,10 +80,17 @@ def mark_agent_state(
     *,
     timeout: float = 5.0,
 ) -> None:
-    status_cmd = build_status_cmd(env, workmux_exe_path, status)
+    # Fork: the hook stores the state before it sets the window icon (the
+    # background state decides the icon), so the state file alone does not
+    # mean the window is ready. Wait for the command to end.
+    marker = env.tmp_path / f"mark-agent-state-{uuid.uuid4().hex}.done"
+    status_cmd = build_status_cmd_with_marker(env, workmux_exe_path, status, marker)
     env.send_keys(window_name, status_cmd)
     assert poll_until(lambda: len(list_agent_state_files(env)) > 0, timeout=timeout), (
         "Agent state file not created"
+    )
+    assert poll_until(marker.exists, timeout=timeout), (
+        "set-window-status did not finish"
     )
 
 
