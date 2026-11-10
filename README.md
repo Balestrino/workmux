@@ -80,7 +80,7 @@ New to worktrees? See [Why git worktrees?](#why-git-worktrees)
 - [Dashboard](#workmux-dashboard) for monitoring agents, reviewing changes, and
   sending commands
 - [Sidebar](https://workmux.dev/guide/sidebar/) for a persistent,
-  at-a-glance view of all agents across tmux windows
+  at-a-glance view of all agents across tmux windows or Zellij tabs
 - [Delegate tasks to worktree agents](#delegating-tasks-with-worktree) with the
   `/worktree` skill
 - [Display agent status in tmux window names](#agent-status-tracking)
@@ -90,6 +90,8 @@ New to worktrees? See [Why git worktrees?](#why-git-worktrees)
 - Copy or symlink configuration files (`.env`, `node_modules`) into new
   worktrees
 - [Sandbox agents](#sandbox) in containers or VMs for enhanced security
+- [Run agents on a remote server](https://workmux.dev/guide/remote/)
+  over SSH while others stay local
 - [Automatic branch name generation](#automatic-branch-name-generation) from
   prompts using LLM
 - Shell completions
@@ -403,8 +405,8 @@ and the dev server spans the bottom.
 - `<agent>`: resolves to the configured agent (from `agent` config or `--agent`
   flag)
 
-Built-in agents (`claude`, `gemini`, `agy`, `codex`, `opencode`, `kiro-cli`, `vibe`,
-`pi`, `omp`, `grok`) are auto-detected when used as literal commands and receive prompt
+Built-in agents (`claude`, `gemini`, `agy`, `codex`, `copilot`, `opencode`, `kiro-cli`,
+`vibe`, `pi`, `omp`, `grok`) are auto-detected when used as literal commands and receive prompt
 injection automatically, without needing the `<agent>` placeholder or a matching
 `agent` config:
 
@@ -637,7 +639,7 @@ alias wm='workmux'
 - [`resurrect`](#workmux-resurrect) - Restore worktree windows after a crash
 - [`path`](#workmux-path-name) - Get the filesystem path of a worktree
 - [`dashboard`](#workmux-dashboard) - Show TUI dashboard of all active agents
-- [`sidebar`](#workmux-sidebar) - Toggle a compact agent status sidebar in tmux
+- [`sidebar`](#workmux-sidebar) - Toggle a compact agent status sidebar in tmux or Zellij
 - [`reap-agents`](#workmux-reap-agents) - Exit tracked agent processes older than a threshold
 - [`config edit`](#workmux-config-edit) - Edit the global configuration file
 - [`init`](#workmux-init) - Generate configuration file
@@ -679,6 +681,11 @@ immediately. If the branch doesn't exist, it will be created automatically.
   `--agent`).
 - `-b, --background`: Create the tmux window in the background without switching
   to it. Useful with `--prompt-editor`.
+- `--remote [<name>]`: Create the workspace on a
+  [remote server](https://workmux.dev/guide/remote/). The name is
+  optional when `placement` names a remote or only one is configured. Put the
+  branch name first: `workmux add my-branch --remote`.
+- `--local`: Create the workspace locally even when `placement` names a remote.
 - `-w, --with-changes`: Move uncommitted changes from the current worktree to
   the new worktree, then reset the original worktree to a clean state. Useful
   when you've started working on main and want to move your branches to a new
@@ -886,7 +893,7 @@ done
 
 When you provide a prompt via `--prompt`, `--prompt-file`, or `--prompt-editor`,
 workmux automatically injects the prompt into panes running the configured agent
-command (e.g., `claude`, `codex`, `opencode`, `gemini`, `agy`, `kiro-cli`, `vibe`,
+command (e.g., `claude`, `codex`, `copilot`, `opencode`, `gemini`, `agy`, `kiro-cli`, `vibe`,
 `pi`, `omp`, `grok`, or whatever you've set via the `agent` config or `--agent` flag) without
 requiring any `.workmux.yaml` changes:
 
@@ -1929,11 +1936,10 @@ Then press `prefix + Ctrl-s` to open the dashboard as a tmux popup.
 
 ### `workmux sidebar`
 
-Toggles a live agent status sidebar on the left or top edge of all tmux
-windows. By default, each sidebar pane shows active agents across all tmux
-sessions with live status updates, providing an always-visible overview without
-taking over the full screen like the dashboard. Use `workmux sidebar filter session`
-to show only agents in the current tmux session.
+Toggles a live agent status sidebar on the left or top edge of tmux windows or
+Zellij tabs. tmux can show agents across sessions; Zellij is scoped to the
+current session. The sidebar provides an always-visible overview without taking
+over the full screen like the dashboard.
 
 ```bash
 workmux sidebar                       # Toggle sidebar on/off (all sessions)
@@ -1997,9 +2003,9 @@ bind C-t run-shell "workmux sidebar"
 
 Then press `prefix + Ctrl-t` to toggle the sidebar.
 
-> **Note:** The sidebar is currently tmux-only. When enabled, a sidebar pane is
-> created in every existing window, and new windows automatically get one via a
-> tmux hook.
+> **Note:** Zellij sidebar support is experimental. See the
+> [Zellij guide](https://workmux.dev/guide/zellij/#sidebar) for its behavior and
+> limitations.
 
 ---
 
@@ -2155,7 +2161,7 @@ at-a-glance visibility into what the agent in each window doing.
 
 **Notes:**
 
-- **Copilot CLI**: No 💬 waiting state
+- **Copilot CLI**: 💬 waiting state requires Copilot CLI 1.0.18 or later
 - **Pi**: No 💬 waiting state
 - **Antigravity CLI (`agy`)**: No 💬 waiting state
 - **Kiro**: Hooks support is messy: requires a custom agent since the default
@@ -2207,8 +2213,8 @@ curl -o ~/.copilot/hooks/workmux-status.json \
 
 Copilot loads personal hooks in every repository. If the repository contains a
 `.github/hooks/workmux-status` installation, remove that directory to avoid
-running both copies of the hook. The waiting state is not supported due to
-limitations in the Copilot CLI hooks implementation.
+running both copies of the hook. The waiting state requires Copilot CLI 1.0.18
+or later.
 
 **Antigravity CLI (`agy`)**: `workmux setup` installs lifecycle hooks in
 `~/.gemini/config/hooks.json`. `PreInvocation` marks the pane working, and the

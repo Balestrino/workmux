@@ -55,6 +55,8 @@ pub struct GitStatus {
     pub is_rebasing: bool,
     /// The path is not inside any git repository. `is_dirty` stays set so
     /// removal checks remain conservative; displays show `?` instead.
-    #[serde(default)]
+    /// Written only when set, so the serialized form otherwise matches
+    /// upstream's (the remote observation format is pinned).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub outside_repository: bool,
 }

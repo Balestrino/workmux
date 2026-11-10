@@ -1,7 +1,11 @@
-//! Sidebar daemon: single process that polls tmux and pushes snapshots to clients.
+//! Sidebar daemon: polls multiplexer state and pushes snapshots to clients.
 
+#[cfg(target_os = "macos")]
+use super::fsevent::FsEventWatcher as SidebarWatcher;
 use anyhow::Result;
 use ignore::gitignore::Gitignore;
+#[cfg(not(target_os = "macos"))]
+use notify::RecommendedWatcher as SidebarWatcher;
 use notify::{EventKindMask, RecursiveMode, Watcher};
 use signal_hook::iterator::{Handle as SignalHandle, Signals};
 use std::collections::{HashMap, HashSet};
@@ -19,7 +23,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::config::{Config, SidebarPosition};
 use crate::git::GitStatus;
 use crate::github::{CheckSummary, PrSummary};
-use crate::multiplexer::{LivePaneInfo, Multiplexer, TmuxBackend, create_backend, detect_backend};
+use crate::multiplexer::{
+    AgentPane, LivePaneInfo, Multiplexer, TmuxBackend, create_backend, detect_backend,
+    zellij::{ZellijBackend, ZellijSidebarTab},
+};
 use crate::state::StateStore;
 
 use super::app::{SidebarFilterMode, SidebarLayoutMode};
@@ -27,19 +34,12 @@ use super::snapshot::{CheckPathEntry, PrPathEntry, SnapshotInputs, build_snapsho
 
 /// Compute the socket path for a multiplexer instance.
 pub fn socket_path(instance_id: &str) -> PathBuf {
-    // FNV-1a provides a stable fixed-width key across the controller and daemon
-    // while keeping long tmux socket paths below Unix socket limits.
-    let mut key = 0xcbf29ce484222325u64;
-    for byte in instance_id.as_bytes() {
-        key ^= u64::from(*byte);
-        key = key.wrapping_mul(0x100000001b3);
-    }
-    std::env::temp_dir().join(format!("workmux-sidebar-{key:016x}.sock"))
+    super::session_state::socket_path(instance_id)
 }
 
-/// Result of a batched tmux query.
+/// Result of one batched multiplexer query.
 #[derive(Clone)]
-struct TmuxState {
+struct MuxState {
     live_panes: HashMap<String, LivePaneInfo>,
     window_statuses: HashMap<String, Option<String>>,
     active_windows: HashSet<(String, String)>,
@@ -58,9 +58,9 @@ struct TmuxState {
 }
 
 /// Query all sidebar-relevant tmux state in a single server observation.
-fn query_tmux_state(tmux: &TmuxBackend) -> Result<TmuxState> {
+fn query_tmux_state(tmux: &TmuxBackend) -> Result<MuxState> {
     let snapshot = tmux.sidebar_snapshot()?;
-    Ok(TmuxState {
+    Ok(MuxState {
         live_panes: snapshot.live_panes,
         window_statuses: snapshot.window_statuses,
         active_windows: snapshot.active_windows,
@@ -77,6 +77,102 @@ fn query_tmux_state(tmux: &TmuxBackend) -> Result<TmuxState> {
         group_by: snapshot.group_by,
         expanded_groups: snapshot.expanded_groups,
     })
+}
+
+fn query_zellij_state(
+    zellij: &ZellijBackend,
+    instance_id: &str,
+) -> Result<(MuxState, Vec<ZellijSidebarTab>)> {
+    let observation = zellij.sidebar_observation()?;
+    let snapshot = observation.snapshot;
+    let state = super::session_state::read(instance_id)?;
+    Ok((
+        MuxState {
+            live_panes: snapshot.live_panes,
+            window_statuses: HashMap::new(),
+            active_windows: snapshot.active_windows,
+            pane_window_ids: snapshot.pane_window_ids,
+            pane_window_indexes: snapshot.pane_window_indexes,
+            active_pane_ids: snapshot.active_pane_ids,
+            window_pane_counts: snapshot.window_pane_counts,
+            server_boot_id: None,
+            position: state.position.map(|position| match position {
+                SidebarPosition::Left => "left".to_string(),
+                SidebarPosition::Top => "top".to_string(),
+            }),
+            layout: state.layout,
+            filter: state.filter,
+            views_enabled: None,
+            sleeping_panes: Some(
+                state
+                    .sleeping_panes
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+            group_by: state.group_by,
+            expanded_groups: Some(state.expanded_groups.join("\t")),
+        },
+        observation.tabs,
+    ))
+}
+
+fn query_mux_state(
+    mux: &dyn Multiplexer,
+    instance_id: &str,
+) -> Result<(MuxState, Option<Vec<ZellijSidebarTab>>)> {
+    match mux.name() {
+        "tmux" => Ok((
+            query_tmux_state(&TmuxBackend::for_socket(instance_id))?,
+            None,
+        )),
+        "zellij" => {
+            let (state, tabs) =
+                query_zellij_state(&ZellijBackend::for_session(instance_id), instance_id)?;
+            Ok((state, Some(tabs)))
+        }
+        name => anyhow::bail!("sidebar is not supported by the {name} backend"),
+    }
+}
+
+fn include_unregistered_zellij_agents(
+    agents: &mut Vec<AgentPane>,
+    live_panes: &HashMap<String, LivePaneInfo>,
+) {
+    let mut known_panes: HashSet<String> =
+        agents.iter().map(|agent| agent.pane_id.clone()).collect();
+    for (pane_id, live) in live_panes {
+        if known_panes.contains(pane_id.as_str()) {
+            continue;
+        }
+        let Some(command) = live.current_command.as_deref() else {
+            continue;
+        };
+        let Some(agent_kind) = crate::agent_identity::classify_agent_kind(Some(command), None)
+        else {
+            continue;
+        };
+        known_panes.insert(pane_id.clone());
+        agents.push(AgentPane {
+            session: live.session.clone().unwrap_or_default(),
+            window_name: live.window.clone().unwrap_or_default(),
+            pane_id: pane_id.clone(),
+            window_id: live.window_id.clone().unwrap_or_default(),
+            window_index: live.window_index,
+            path: live.working_dir.clone(),
+            pane_title: live.title.clone(),
+            status: None,
+            status_ts: None,
+            activity_ts: None,
+            updated_ts: None,
+            window_cmd: None,
+            agent_command: Some(command.to_string()),
+            agent_kind: Some(agent_kind),
+            prompt: None,
+            remote: None,
+            background: false,
+        });
+    }
 }
 
 struct BroadcastCache {
@@ -571,7 +667,7 @@ fn find_worktrees_for_path(
 /// If the path is already watched by another worktree, just adds the mapping.
 /// Only records the mapping after the OS watch succeeds (or was already active).
 fn add_watch(
-    watcher: &mut notify::RecommendedWatcher,
+    watcher: &mut SidebarWatcher,
     path: &Path,
     mode: RecursiveMode,
     worktree: &Path,
@@ -593,7 +689,7 @@ fn add_watch(
 
 /// Remove watch association for a worktree. Unwatches the path if no other worktree needs it.
 fn remove_worktree_watch(
-    watcher: &mut notify::RecommendedWatcher,
+    watcher: &mut SidebarWatcher,
     watch_path: &Path,
     worktree: &Path,
     watch_to_worktrees: &mut HashMap<PathBuf, HashSet<PathBuf>>,
@@ -677,7 +773,7 @@ fn worktree_watch_specs(worktree: &Path, watch_worktree_files: bool) -> Vec<Work
 /// Git metadata watches detect commits, staging, and branch changes. macOS also
 /// watches worktree files recursively, while Linux detects them through polling.
 fn setup_worktree_watches(
-    watcher: &mut notify::RecommendedWatcher,
+    watcher: &mut SidebarWatcher,
     worktree: &Path,
     watch_to_worktrees: &mut HashMap<PathBuf, HashSet<PathBuf>>,
 ) -> (Vec<PathBuf>, bool) {
@@ -695,7 +791,7 @@ fn setup_worktree_watches(
 }
 
 fn detach_worktree_watches(
-    watcher: &mut notify::RecommendedWatcher,
+    watcher: &mut SidebarWatcher,
     worktree: &Path,
     worktree_watches: &mut HashMap<PathBuf, Vec<PathBuf>>,
     watch_to_worktrees: &mut HashMap<PathBuf, HashSet<PathBuf>>,
@@ -708,7 +804,7 @@ fn detach_worktree_watches(
 }
 
 fn replace_worktree_watches(
-    watcher: &mut notify::RecommendedWatcher,
+    watcher: &mut SidebarWatcher,
     worktree: &Path,
     worktree_watches: &mut HashMap<PathBuf, Vec<PathBuf>>,
     watch_complete: &mut HashMap<PathBuf, bool>,
@@ -723,7 +819,7 @@ fn replace_worktree_watches(
 /// Reconcile root watches, preserving watches for repositories that remain active.
 /// Returns the roots whose watches were added.
 fn reconcile_worktree_watches(
-    watcher: &mut notify::RecommendedWatcher,
+    watcher: &mut SidebarWatcher,
     active_roots: &[PathBuf],
     worktree_watches: &mut HashMap<PathBuf, Vec<PathBuf>>,
     watch_complete: &mut HashMap<PathBuf, bool>,
@@ -1317,7 +1413,7 @@ fn spawn_git_worker(
         let (fs_tx, fs_rx) = std::sync::mpsc::sync_channel(256);
         let fs_overflow = Arc::new(AtomicBool::new(false));
         let fs_overflow_clone = fs_overflow.clone();
-        let mut watcher: Option<notify::RecommendedWatcher> = match notify::RecommendedWatcher::new(
+        let mut watcher: Option<SidebarWatcher> = match SidebarWatcher::new(
             move |event: notify::Result<notify::Event>| {
                 if let Ok(ref e) = event {
                     // Filter out .git internal traffic that doesn't affect status.
@@ -1765,7 +1861,7 @@ fn spawn_config_watcher(
         let (fs_tx, fs_rx) = mpsc::sync_channel::<notify::Result<notify::Event>>(64);
         let overflow = Arc::new(AtomicBool::new(false));
         let overflow_clone = overflow.clone();
-        let mut watcher: notify::RecommendedWatcher = match notify::RecommendedWatcher::new(
+        let mut watcher: SidebarWatcher = match SidebarWatcher::new(
             move |event: notify::Result<notify::Event>| {
                 if event
                     .as_ref()
@@ -2227,7 +2323,7 @@ impl Scheduler {
 pub fn run() -> Result<()> {
     let mux = create_backend(detect_backend());
     let instance_id = mux.instance_id();
-    let tmux = TmuxBackend::for_socket(&instance_id);
+    let tmux = (mux.name() == "tmux").then(|| TmuxBackend::for_socket(&instance_id));
     let config = Arc::new(Mutex::new(Config::load(None)?));
     let mut view_projects = super::view::ProjectCache::default();
     // Captured at startup and intentionally not live-reloaded. tmux's
@@ -2263,10 +2359,16 @@ pub fn run() -> Result<()> {
     let (pr_cache, check_cache, github_path_tx) =
         spawn_github_worker(term.clone(), publication_dirty.clone(), wake_tx);
 
-    tmux.set_global_option(
-        "@workmux_sidebar_daemon_pid",
-        &std::process::id().to_string(),
-    )?;
+    if let Some(tmux) = &tmux {
+        tmux.set_global_option(
+            "@workmux_sidebar_daemon_pid",
+            &std::process::id().to_string(),
+        )?;
+    } else {
+        super::session_state::update(&instance_id, |state| {
+            state.daemon_pid = Some(std::process::id());
+        })?;
+    }
 
     let mut scheduler = Scheduler::new(Instant::now());
     let mut inactivity_tracker = InactivityTracker::new(Duration::from_secs(10));
@@ -2275,7 +2377,7 @@ pub fn run() -> Result<()> {
     let store = StateStore::new()?;
     let mut agent_state_cache = crate::state::AgentStateCache::default();
     let mut compacted_boot_id: Option<String> = None;
-    let mut cached_inputs: Option<(Vec<crate::multiplexer::AgentPane>, TmuxState)> = None;
+    let mut cached_inputs: Option<(Vec<crate::multiplexer::AgentPane>, MuxState)> = None;
     let mut pending_captures: Option<HashMap<String, String>> = None;
     let mut publish_pending = false;
     let mut last_client_seen = Instant::now();
@@ -2297,8 +2399,28 @@ pub fn run() -> Result<()> {
 
         if scheduler.observation_due(now) {
             scheduler.finish_observation(now);
-            match query_tmux_state(&tmux) {
-                Ok(tmux_state) => {
+            if mux.name() == "zellij" {
+                match super::session_state::try_lock_layout(&instance_id) {
+                    Ok(Some(guard)) => drop(guard),
+                    Ok(None) => continue,
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to check Zellij layout lock");
+                        continue;
+                    }
+                }
+            }
+            match query_mux_state(mux.as_ref(), &instance_id) {
+                Ok((tmux_state, zellij_tabs)) => {
+                    if let Some(tabs) = zellij_tabs
+                        && server.client_count() > 0
+                        && let Err(error) =
+                            super::zellij_panes::create_sidebar_in_active_tab_from_snapshot(
+                                &instance_id,
+                                &tabs,
+                            )
+                    {
+                        tracing::warn!(%error, "failed to synchronize Zellij sidebars");
+                    }
                     if tmux_state.server_boot_id != compacted_boot_id {
                         match store.compact_context(
                             &backend_name,
@@ -2328,6 +2450,21 @@ pub fn run() -> Result<()> {
                         tmux_state.server_boot_id.as_deref(),
                     ) {
                         Ok((agents, stats)) => {
+                            let mut agents = agents;
+                            if backend_name == "zellij" {
+                                include_unregistered_zellij_agents(
+                                    &mut agents,
+                                    &tmux_state.live_panes,
+                                );
+                            }
+                            let agents = {
+                                let cfg = config.lock().unwrap();
+                                let now_ts = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs();
+                                crate::remote::agents::for_views(&cfg, agents, now_ts)
+                            };
                             tracing::trace!(
                                 listed = stats.listed,
                                 metadata = stats.metadata,
@@ -2347,7 +2484,7 @@ pub fn run() -> Result<()> {
                         }
                     }
                 }
-                Err(error) => tracing::warn!(%error, "failed to query sidebar tmux state"),
+                Err(error) => tracing::warn!(%error, "failed to query sidebar multiplexer state"),
             }
         }
 
@@ -2362,7 +2499,11 @@ pub fn run() -> Result<()> {
 
         if publish_pending && let Some((agents, tmux_state)) = &cached_inputs {
             publish_pending = false;
-            let live_paths = agents.iter().map(|agent| agent.path.clone()).collect();
+            let live_paths = agents
+                .iter()
+                .filter(|agent| agent.remote.is_none())
+                .map(|agent| agent.path.clone())
+                .collect();
             let version = config_version.load(Ordering::Relaxed);
             let invalidated = version != seen_config_version;
             seen_config_version = version;
@@ -2455,23 +2596,25 @@ pub fn run() -> Result<()> {
                     super::view::is_enabled(tmux_state.views_enabled.as_deref()),
                 );
             }
-            for window in tmux_state.window_pane_counts.keys() {
-                let scope = output.snapshot.window_views.get(window).cloned();
-                if last_window_views.get(window) != Some(&scope) {
-                    let result = match &scope {
-                        Some(scope) => tmux.set_window_option(
-                            window,
-                            super::view::SCOPE_OPTION,
-                            &serde_json::to_string(scope)?,
-                        ),
-                        None => tmux.unset_window_option(window, super::view::SCOPE_OPTION),
-                    };
-                    match result {
-                        Ok(()) => {
-                            last_window_views.insert(window.clone(), scope);
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "failed to publish sidebar window view")
+            if let Some(tmux) = tmux.as_ref() {
+                for window in tmux_state.window_pane_counts.keys() {
+                    let scope = output.snapshot.window_views.get(window).cloned();
+                    if last_window_views.get(window) != Some(&scope) {
+                        let result = match &scope {
+                            Some(scope) => tmux.set_window_option(
+                                window,
+                                super::view::SCOPE_OPTION,
+                                &serde_json::to_string(scope)?,
+                            ),
+                            None => tmux.unset_window_option(window, super::view::SCOPE_OPTION),
+                        };
+                        match result {
+                            Ok(()) => {
+                                last_window_views.insert(window.clone(), scope);
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "failed to publish sidebar window view")
+                            }
                         }
                     }
                 }
@@ -2486,6 +2629,7 @@ pub fn run() -> Result<()> {
                     .snapshot
                     .agents
                     .iter()
+                    .filter(|agent| agent.remote.is_none())
                     .map(|agent| GitWorkerPath {
                         path: agent.path.clone(),
                         is_stale: agent
@@ -2539,10 +2683,18 @@ pub fn run() -> Result<()> {
                 .collect::<Vec<_>>()
                 .join(" ");
             if agent_list != last_agent_list {
-                let result = if agent_list.is_empty() {
-                    tmux.unset_global_option("@workmux_sidebar_agents")
+                let result = if let Some(tmux) = &tmux {
+                    if agent_list.is_empty() {
+                        tmux.unset_global_option("@workmux_sidebar_agents")
+                    } else {
+                        tmux.set_global_option("@workmux_sidebar_agents", &agent_list)
+                    }
                 } else {
-                    tmux.set_global_option("@workmux_sidebar_agents", &agent_list)
+                    super::session_state::update(&instance_id, |state| {
+                        state.ordered_agents =
+                            agent_list.split_whitespace().map(String::from).collect();
+                    })
+                    .map(|_| ())
                 };
                 if let Err(error) = result {
                     tracing::warn!(%error, "failed to publish sidebar agent inventory");
@@ -2599,10 +2751,17 @@ pub fn run() -> Result<()> {
     if let Ok(store) = StateStore::new() {
         store.delete_runtime(&backend_name, &instance_id);
     }
-    let _ = tmux.unset_global_option("@workmux_sidebar_daemon_pid");
-    let _ = tmux.unset_global_option("@workmux_sidebar_agents");
-    let _ = tmux.unset_global_option("@workmux_sleeping_panes");
-    let _ = tmux.unset_global_option("@workmux_sidebar_scope");
+    if let Some(tmux) = &tmux {
+        let _ = tmux.unset_global_option("@workmux_sidebar_daemon_pid");
+        let _ = tmux.unset_global_option("@workmux_sidebar_agents");
+        let _ = tmux.unset_global_option("@workmux_sleeping_panes");
+        let _ = tmux.unset_global_option("@workmux_sidebar_scope");
+    } else {
+        let _ = super::session_state::update(&instance_id, |state| {
+            state.daemon_pid = None;
+            state.ordered_agents.clear();
+        });
+    }
     Ok(())
 }
 
@@ -2611,7 +2770,7 @@ pub fn run() -> Result<()> {
 /// Inputs gathered from the environment for one daemon tick.
 struct TickInput {
     agents: Vec<crate::multiplexer::AgentPane>,
-    tmux_state: TmuxState,
+    tmux_state: MuxState,
     captured_panes: HashMap<String, String>,
     now: Instant,
     now_ts: u64,
@@ -2679,8 +2838,14 @@ fn compute_tick(
     } = input;
 
     // Phase 1: Inactivity detection
-    let interrupted =
-        tracker.check_with(&agents, now, |pane_id| captured_panes.get(pane_id).cloned());
+    let observable: Vec<_> = agents
+        .iter()
+        .filter(|agent| shows_live_output(agent))
+        .cloned()
+        .collect();
+    let interrupted = tracker.check_with(&observable, now, |pane_id| {
+        captured_panes.get(pane_id).cloned()
+    });
 
     // Phase 2: Mutate agents in memory for resumed agents
     let mut agent_writes = Vec::new();
@@ -2769,6 +2934,15 @@ fn apply_tick_effects(
     }
 }
 
+/// Whether the agent's local pane shows its output as it happens. A remote
+/// agent's does only while a connected relay draws it.
+fn shows_live_output(agent: &crate::multiplexer::AgentPane) -> bool {
+    agent
+        .remote
+        .as_ref()
+        .is_none_or(|remote| remote.attached && remote.connected)
+}
+
 /// Capture working panes, including interrupted ones, to detect resumed output.
 /// Background agents are skipped: inactivity detection ignores them.
 fn gather_captures(
@@ -2778,6 +2952,7 @@ fn gather_captures(
     agents
         .iter()
         .filter(|a| a.status == Some(crate::multiplexer::AgentStatus::Working) && !a.background)
+        .filter(|a| shows_live_output(a))
         .filter_map(|a| {
             mux.capture_pane(&a.pane_id, 5)
                 .map(|content| (a.pane_id.clone(), content))
@@ -2806,6 +2981,93 @@ mod tests {
     fn init_repo(path: &Path) {
         std::fs::create_dir_all(path).unwrap();
         run_git(path, &["init", "-q"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn git_watch_churn_delivers_events_and_stops() {
+        const TEST: &str =
+            "command::sidebar::daemon::tests::git_watch_churn_delivers_events_and_stops";
+        run_git_watch_churn(TEST, 100, Duration::from_secs(180));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "manual FSEvents watch churn stress test"]
+    fn git_watch_churn_stress_delivers_events_and_stops() {
+        const TEST: &str =
+            "command::sidebar::daemon::tests::git_watch_churn_stress_delivers_events_and_stops";
+        run_git_watch_churn(TEST, 10_000, Duration::from_secs(900));
+    }
+
+    #[cfg(target_os = "macos")]
+    fn run_git_watch_churn(test_name: &str, iterations: usize, timeout: Duration) {
+        let temp = tempfile::tempdir().unwrap();
+        if !crate::test_support::is_isolated_child(test_name) {
+            crate::test_support::run_isolated_test_with_timeout(
+                test_name,
+                temp.path(),
+                &[],
+                timeout,
+            );
+            return;
+        }
+        let root = temp.path().canonicalize().unwrap();
+        let a = root.join("a");
+        let b = root.join("b");
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut watcher = SidebarWatcher::new(
+            move |event| {
+                let _ = tx.send(event);
+            },
+            mutation_watcher_config(),
+        )
+        .unwrap();
+        let mut reverse = HashMap::new();
+        assert!(add_watch(
+            &mut watcher,
+            &a,
+            RecursiveMode::Recursive,
+            &a,
+            &mut reverse
+        ));
+        // Sibling roots require stream restarts even on backends that coalesce
+        // nested watches. Each registration immediately follows a fresh start.
+        let churn_started = Instant::now();
+        for iteration in 0..iterations {
+            if iteration % 100 == 0 {
+                eprintln!(
+                    "watch churn {iteration}/{iterations}: {:?}",
+                    churn_started.elapsed()
+                );
+            }
+            assert!(add_watch(
+                &mut watcher,
+                &b,
+                RecursiveMode::NonRecursive,
+                &b,
+                &mut reverse
+            ));
+            remove_worktree_watch(&mut watcher, &b, &b, &mut reverse);
+        }
+        eprintln!("watch churn complete: {:?}", churn_started.elapsed());
+        let changed = a.join("changed");
+        std::fs::write(&changed, "mutation").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let event = rx
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("watcher did not deliver a mutation after churn")
+                .expect("watcher reported an error");
+            if event.paths.contains(&changed) {
+                break;
+            }
+        }
+        // Destruction must finish before the child can report success.
+        drop(watcher);
+        println!("{}", crate::test_support::ISOLATED_TEST_CANARY);
     }
 
     #[test]
@@ -3150,6 +3412,7 @@ mod tests {
             agent_kind: None,
             prompt: None,
             background: false,
+            remote: None,
         }
     }
 
@@ -3791,7 +4054,7 @@ mod tests {
                 Some("parent")
             );
 
-            let mut watcher = notify::RecommendedWatcher::new(
+            let mut watcher = SidebarWatcher::new(
                 |_: notify::Result<notify::Event>| {},
                 mutation_watcher_config(),
             )
@@ -4800,6 +5063,7 @@ mod tests {
                 prompt: None,
                 turn_active: false,
                 background: Vec::new(),
+                remote: None,
             };
             store.upsert_agent(&state).unwrap();
         }
@@ -4815,7 +5079,7 @@ mod tests {
             let output = compute_tick(
                 TickInput {
                     agents,
-                    tmux_state: TmuxState {
+                    tmux_state: MuxState {
                         live_panes: HashMap::new(),
                         window_statuses: HashMap::new(),
                         active_windows: HashSet::new(),
@@ -5183,5 +5447,76 @@ mod tests {
             assert_eq!(agent.activity_ts, Some(1012));
             assert!(!output.snapshot.interrupted_pane_ids.contains("%1"));
         }
+    }
+
+    #[test]
+    fn idle_zellij_agent_is_visible_before_status_hook_registration() {
+        let mut agents = Vec::new();
+        let live_panes = HashMap::from([(
+            "terminal_1".to_string(),
+            LivePaneInfo {
+                pid: None,
+                current_command: Some("copilot --resume".to_string()),
+                working_dir: PathBuf::from("/repo/worktree"),
+                title: Some("Feature work - GitHub Copilot".to_string()),
+                session: Some("zellij-session".to_string()),
+                window: Some("feature".to_string()),
+                session_id: None,
+                window_id: Some("7".to_string()),
+                window_index: Some(1),
+            },
+        )]);
+
+        include_unregistered_zellij_agents(&mut agents, &live_panes);
+
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].pane_id, "terminal_1");
+        assert_eq!(agents[0].agent_kind.as_deref(), Some("copilot"));
+        assert_eq!(agents[0].status, None);
+    }
+
+    #[test]
+    fn registered_zellij_agent_is_not_duplicated() {
+        let live = LivePaneInfo {
+            pid: None,
+            current_command: Some("copilot --resume".to_string()),
+            working_dir: PathBuf::from("/repo/worktree"),
+            title: Some("Feature work - GitHub Copilot".to_string()),
+            session: Some("zellij-session".to_string()),
+            window: Some("feature".to_string()),
+            session_id: None,
+            window_id: Some("7".to_string()),
+            window_index: Some(1),
+        };
+        let mut agents = vec![AgentPane {
+            session: "zellij-session".to_string(),
+            window_name: "feature".to_string(),
+            pane_id: "terminal_1".to_string(),
+            window_id: "7".to_string(),
+            window_index: Some(1),
+            path: PathBuf::from("/repo/worktree"),
+            pane_title: live.title.clone(),
+            status: Some(crate::multiplexer::AgentStatus::Working),
+            status_ts: Some(1),
+            activity_ts: Some(1),
+            updated_ts: Some(1),
+            window_cmd: None,
+            agent_command: Some("copilot".to_string()),
+            agent_kind: Some("copilot".to_string()),
+            prompt: None,
+            remote: None,
+            background: false,
+        }];
+
+        include_unregistered_zellij_agents(
+            &mut agents,
+            &HashMap::from([("terminal_1".to_string(), live)]),
+        );
+
+        assert_eq!(agents.len(), 1);
+        assert_eq!(
+            agents[0].status,
+            Some(crate::multiplexer::AgentStatus::Working)
+        );
     }
 }

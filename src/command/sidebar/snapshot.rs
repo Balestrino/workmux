@@ -96,7 +96,11 @@ fn default_stale_threshold_secs() -> u64 {
 pub fn group_label(agent: &AgentPane, group_by: SidebarGroupBy) -> String {
     let raw = match group_by {
         SidebarGroupBy::Project => extract_project_name(&agent.path),
-        SidebarGroupBy::Session => agent.session.clone(),
+        // A remote agent no local pane relays is in no session.
+        SidebarGroupBy::Session => match &agent.remote {
+            Some(remote) if agent.session.is_empty() => format!("@{}", remote.at.remote),
+            _ => agent.session.clone(),
+        },
         SidebarGroupBy::None => String::new(),
     };
     if raw.trim().is_empty() {
@@ -118,11 +122,12 @@ fn group_sort_key(agent: &AgentPane, group_by: Option<SidebarGroupBy>) -> (Strin
     }
 }
 
-/// Numeric pane id for stable ordering. Handles tmux (`%3`) and numeric ids.
+/// Numeric pane id for stable ordering across tmux, Zellij, and numeric IDs.
 fn pane_num(agent: &AgentPane) -> u64 {
     agent
         .pane_id
         .strip_prefix('%')
+        .or_else(|| agent.pane_id.strip_prefix("terminal_"))
         .unwrap_or(&agent.pane_id)
         .parse()
         .unwrap_or(u64::MAX)
@@ -275,7 +280,9 @@ fn order_agents(
 /// the same question, or a hotkey lands somewhere other than the row wearing
 /// its number.
 pub fn is_jump_target(snapshot: &SidebarSnapshot, agent: &AgentPane) -> bool {
-    snapshot.group_by.is_none() || !snapshot.stale_pane_ids.contains(&agent.pane_id)
+    // A remote agent no local pane relays has no pane to switch to.
+    !crate::remote::agents::is_detached(agent)
+        && (snapshot.group_by.is_none() || !snapshot.stale_pane_ids.contains(&agent.pane_id))
 }
 
 /// Inputs for one snapshot build.
@@ -468,6 +475,7 @@ mod tests {
             agent_kind: None,
             prompt: None,
             background: false,
+            remote: None,
         }
     }
 
@@ -573,6 +581,38 @@ mod tests {
 
     fn order(agents: &[AgentPane]) -> Vec<String> {
         agents.iter().map(|a| a.pane_id.clone()).collect()
+    }
+
+    #[test]
+    fn unregistered_zellij_agents_have_stable_numeric_order() {
+        for sort in [
+            SidebarSort::Recency,
+            SidebarSort::Priority,
+            SidebarSort::Window,
+        ] {
+            for ids in [
+                ["terminal_10", "terminal_2", "terminal_1"],
+                ["terminal_2", "terminal_1", "terminal_10"],
+            ] {
+                let agents = ids
+                    .into_iter()
+                    .map(|id| {
+                        let mut a = agent("/tmp/project");
+                        a.pane_id = id.to_string();
+                        a
+                    })
+                    .collect();
+                let snapshot = build_snapshot(SnapshotInputs {
+                    agents,
+                    sort,
+                    ..Default::default()
+                });
+                assert_eq!(
+                    order(&snapshot.agents),
+                    ["terminal_1", "terminal_2", "terminal_10"]
+                );
+            }
+        }
     }
 
     /// Fixture spanning two projects and two sessions with mixed statuses.
