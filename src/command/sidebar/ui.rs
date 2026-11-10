@@ -1883,6 +1883,7 @@ mod tests {
                 agent_kind: None,
                 prompt: None,
                 background: false,
+                remote: None,
             });
         }
         app.rebuild_rows();
@@ -2414,6 +2415,7 @@ mod tests {
                 agent_kind: Some("claude".to_string()),
                 prompt: None,
                 background: false,
+                remote: None,
             })
             .collect();
         app.rebuild_rows();

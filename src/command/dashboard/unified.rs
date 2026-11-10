@@ -214,6 +214,7 @@ mod tests {
             agent_kind: None,
             prompt: None,
             background: false,
+            remote: None,
         }
     }
 

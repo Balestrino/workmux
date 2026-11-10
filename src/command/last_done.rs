@@ -179,6 +179,7 @@ mod tests {
             prompt: None,
             turn_active: false,
             background: Vec::new(),
+            remote: None,
         }
     }
 

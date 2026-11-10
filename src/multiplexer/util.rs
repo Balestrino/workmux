@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use super::agent::SelectedAgent;
 use crate::config::Config;
@@ -20,6 +20,31 @@ use super::types::LivePaneInfo;
 /// Used by all backends to construct full window names from prefix and base name.
 pub fn prefixed(prefix: &str, window_name: &str) -> String {
     format!("{}{}", prefix, window_name)
+}
+
+/// Create a named window in an existing parent session, or as its first window.
+pub fn create_window_in_parent_session(
+    mux: &dyn super::Multiplexer,
+    session: &str,
+    name: &str,
+    cwd: &Path,
+) -> Result<String> {
+    if mux.session_exists(session)? {
+        mux.create_window_in_session(super::CreateWindowInSessionParams {
+            session_name: session,
+            name: Some(name),
+            cwd,
+        })
+        .context("Failed to create window in session")
+    } else {
+        mux.create_session(super::CreateSessionParams {
+            prefix: "",
+            name: session,
+            cwd,
+            initial_window_name: Some(name),
+        })
+        .context("Failed to create session")
+    }
 }
 
 /// Check if a shell is POSIX-compatible (supports `$(...)` syntax).
@@ -630,6 +655,38 @@ mod tests {
     }
 
     #[test]
+    fn resolve_structured_pane_command_injects_copilot_prompt_after_configured_args() {
+        let prompt = PathBuf::from("/tmp/worktree/PROMPT.md");
+        let working_dir = PathBuf::from("/tmp/worktree");
+        let mut config = config_with_agent("copilot-yolo");
+        config.agents.insert(
+            "copilot-yolo".to_string(),
+            crate::config::AgentEntry {
+                command: Some("copilot".to_string()),
+                agent_type: Some("copilot".to_string()),
+                args: vec!["--yolo".to_string()],
+                env: std::collections::BTreeMap::new(),
+            },
+        );
+        let resolved = resolve_pane_command_with_config(
+            Some("<agent>"),
+            true,
+            Some(&prompt),
+            &working_dir,
+            &config,
+            None,
+            "/bin/zsh",
+        )
+        .unwrap();
+        assert_eq!(
+            resolved.command,
+            " copilot --yolo --interactive=\"$(cat PROMPT.md)\""
+        );
+        assert!(resolved.prompt_injected);
+        assert_eq!(resolved.selected_agent.unwrap().kind(), "copilot");
+    }
+
+    #[test]
     fn resolve_structured_pane_command_injects_prompt_once_for_literal_agent_name() {
         let prompt = PathBuf::from("/tmp/worktree/PROMPT.md");
         let working_dir = PathBuf::from("/tmp/worktree");
@@ -820,9 +877,7 @@ mod tests {
         )
         .unwrap();
         let agent = resolved.selected_agent.as_mut().unwrap();
-        agent
-            .command
-            .prepend_args_fragment("--dangerously-skip-permissions");
+        agent.add_sandbox_flags();
         assert_eq!(
             resolved.render_command(),
             " env FOO='bar baz' claude --dangerously-skip-permissions -- \"$(cat PROMPT.md)\""

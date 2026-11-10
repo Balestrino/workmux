@@ -15,7 +15,9 @@ use crate::multiplexer::{
     create_backend_for_instance, detect_backend,
 };
 use crate::state::background::{BackgroundKind, HookEvent, Launch};
-use crate::state::{AgentState, PromptUpdate, ResolvedStatus, StateStore, StatusEvent};
+use crate::state::{
+    AgentState, PromptUpdate, RemoteUpdate, ResolvedStatus, StateStore, StatusEvent,
+};
 
 #[derive(ValueEnum, Debug, Clone)]
 pub enum SetWindowStatusCommand {
@@ -215,32 +217,88 @@ fn apply_status_update(
     cwd: Option<PathBuf>,
     event: Option<StatusEvent>,
 ) -> Result<()> {
-    match cmd {
-        SetWindowStatusCommand::Clear => {
+    let change = match cmd {
+        SetWindowStatusCommand::Working => Some(AgentStatus::Working),
+        SetWindowStatusCommand::Waiting => Some(AgentStatus::Waiting),
+        SetWindowStatusCommand::Done => Some(AgentStatus::Done),
+        SetWindowStatusCommand::Clear => None,
+    };
+    apply_status_with(
+        config,
+        mux,
+        pane_id,
+        change,
+        agent_session_id,
+        prompt,
+        None,
+        cwd,
+        event,
+    )
+}
+
+/// Show `status` on `pane_id` (`None` clears it): the multiplexer's status
+/// icon, the state store and the sidebar. Status hooks and panes relaying a
+/// remote agent (`remote`) both come through here.
+pub(crate) fn apply_status(
+    config: &Config,
+    mux: &dyn Multiplexer,
+    pane_id: &str,
+    status: Option<AgentStatus>,
+    agent_session_id: Option<&str>,
+    prompt: Option<&str>,
+    remote: Option<RemoteUpdate>,
+) -> Result<()> {
+    apply_status_with(
+        config,
+        mux,
+        pane_id,
+        status,
+        agent_session_id,
+        prompt,
+        remote,
+        None,
+        None,
+    )
+}
+
+/// [`apply_status`] with what only a status hook reports: the agent's
+/// directory (`cwd`) and the hook `event` driving the background state.
+#[allow(clippy::too_many_arguments)]
+fn apply_status_with(
+    config: &Config,
+    mux: &dyn Multiplexer,
+    pane_id: &str,
+    status: Option<AgentStatus>,
+    agent_session_id: Option<&str>,
+    prompt: Option<&str>,
+    remote: Option<RemoteUpdate>,
+    cwd: Option<PathBuf>,
+    event: Option<StatusEvent>,
+) -> Result<()> {
+    match status {
+        None => {
             mux.clear_status(pane_id)?;
             crate::state::clear_agent_status(mux, pane_id, !config.prompt_capture_enabled());
         }
-        SetWindowStatusCommand::Working
-        | SetWindowStatusCommand::Waiting
-        | SetWindowStatusCommand::Done => {
-            let status = match cmd {
-                SetWindowStatusCommand::Working => AgentStatus::Working,
-                SetWindowStatusCommand::Waiting => AgentStatus::Waiting,
-                SetWindowStatusCommand::Done => AgentStatus::Done,
-                SetWindowStatusCommand::Clear => unreachable!(),
-            };
-
+        Some(status) => {
             // Persist first: the hook event can change the status to show.
-            let resolved = crate::state::persist_agent_update(
-                mux,
-                pane_id,
-                Some(status),
-                None,
-                agent_session_id.map(str::to_string),
-                prompt_update(config, status, prompt),
-                cwd,
-                event,
-            )
+            let prompt = prompt_update(config, status, prompt);
+            let resolved = match remote {
+                Some(update) => {
+                    crate::state::persist_remote_update(mux, pane_id, Some(status), update, prompt);
+                    None
+                }
+                None => crate::state::persist_agent_update(
+                    mux,
+                    pane_id,
+                    Some(status),
+                    None,
+                    agent_session_id.map(str::to_string),
+                    prompt,
+                    cwd,
+                    event,
+                ),
+            }
             .unwrap_or(ResolvedStatus {
                 status,
                 background: false,
@@ -876,6 +934,7 @@ mod tests {
             prompt: None,
             turn_active: false,
             background: Vec::new(),
+            remote: None,
         }
     }
 

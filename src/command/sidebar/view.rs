@@ -156,7 +156,9 @@ impl ProjectCache {
         let projects: HashMap<_, _> = agents
             .iter()
             .map(|agent| {
-                let root = if needs_paths {
+                let root = if let Some(remote) = &agent.remote {
+                    remote.project_root.clone()
+                } else if needs_paths {
                     self.root(&agent.path)
                 } else {
                     agent.path.clone()
@@ -359,6 +361,7 @@ mod tests {
             agent_kind: None,
             prompt: None,
             background: false,
+            remote: None,
         }
     }
 

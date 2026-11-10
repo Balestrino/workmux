@@ -79,6 +79,44 @@ Changes are not proposed upstream.
 
 Design and plan: `docs/superpowers/`.
 
+## Upstream level and differences from upstream
+
+`main` contains upstream up to **v0.1.281** (merged 2026-11-10; the build
+reports `workmux 0.1.281`). Besides the features above, the fork departs from
+upstream behaviour in these points:
+
+- **A hook event is never dropped by a snapshot conflict.** Since upstream
+  `5429719e` a status write takes the pane snapshot outside the agent-state
+  lock and is skipped after three conflicting attempts. A plain status
+  survives that (the next hook repeats it), but the background state is built
+  from hook events (a launch, a stop, a subagent start) that nothing repeats:
+  a lost one leaves an agent done with work still running, or working after
+  its turn ended. Measured on an isolated tmux server with the merged build:
+  5 simultaneous hooks lost 13 of 40 background launches and 16 lost 32 of
+  40, where 0.1.277 lost none. A write that carries a hook event (Claude
+  Code, Codex) therefore makes one last attempt with the snapshot taken under
+  the lock, as 0.1.277 did; with it 24 simultaneous hooks lost 0 of 48.
+  Writes without an event keep upstream's behaviour. Cost: in that rare case
+  the lock is held for one tmux query. Decided 2026-11-10; it is one commit
+  (`fix(state): do not drop a hook event after three snapshot conflicts`) and
+  can be reverted on its own.
+- **Worktree footer clicks** include upstream's new `Enter Open` entry, which
+  upstream v0.1.281 draws but leaves out of the click map (every footer click
+  lands one entry to the right there).
+- `GitStatus.outside_repository` (fork) is written only when set, so the
+  cached observation of a remote workspace keeps upstream's pinned format.
+
+Upstream changes worth knowing when using the fork:
+
+- `workmux send`, `capture` and `run` refuse a worktree with more than one
+  agent (`ambiguous_target`) instead of picking the first. With agents located
+  by their reported directory, a second agent that `cd`s into a worktree is
+  enough: target the pane ID (`pane_id` of `workmux status --json`).
+- Remote workspaces, the zellij sidebar and Copilot support come with the
+  merge but are not used or tried here. Remote agents never show the
+  background state, and the unified view lists them without their remote
+  label.
+
 ## Installing
 
 A single binary is built from `main` and installed as `workmux`, so agent
