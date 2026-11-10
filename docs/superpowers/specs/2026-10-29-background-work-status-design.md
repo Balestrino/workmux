@@ -33,16 +33,16 @@ transcripts and the workmux log of real sessions.
 Claude Code 2.1.312, one turn that launched a background Bash command, a
 background Agent and a Monitor, then ended:
 
-| Event | Payload facts |
-| --- | --- |
-| `PostToolUse` Bash, `run_in_background: true` | `tool_response.backgroundTaskId` (`"b2djt8l8t"`) |
-| `PostToolUse` Agent, background | `tool_response`: `isAsync: true`, `status: "async_launched"`, `agentId` |
-| `SubagentStart` | `agent_id` equal to the Agent `agentId` above |
-| `PostToolUse` Monitor | `tool_response`: `taskId`, `timeoutMs`, `persistent` |
-| `PostToolUse` from inside a subagent | carries `agent_id` |
-| `Stop` | main turn only; no `agent_id` |
-| `SubagentStop` | `agent_id`; also fires after **every** `Stop` for internal agents that never had a `SubagentStart` |
-| completion of each background item | `UserPromptSubmit` whose `prompt` starts with `<task-notification>` and holds `<task-id>ID</task-id>` (the id from the rows above) and `<status>` |
+| Event                                         | Payload facts                                                                                                                                     |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PostToolUse` Bash, `run_in_background: true` | `tool_response.backgroundTaskId` (`"b2djt8l8t"`)                                                                                                  |
+| `PostToolUse` Agent, background               | `tool_response`: `isAsync: true`, `status: "async_launched"`, `agentId`                                                                           |
+| `SubagentStart`                               | `agent_id` equal to the Agent `agentId` above                                                                                                     |
+| `PostToolUse` Monitor                         | `tool_response`: `taskId`, `timeoutMs`, `persistent`                                                                                              |
+| `PostToolUse` from inside a subagent          | carries `agent_id`                                                                                                                                |
+| `Stop`                                        | main turn only; no `agent_id`                                                                                                                     |
+| `SubagentStop`                                | `agent_id`; also fires after **every** `Stop` for internal agents that never had a `SubagentStart`                                                |
+| completion of each background item            | `UserPromptSubmit` whose `prompt` starts with `<task-notification>` and holds `<task-id>ID</task-id>` (the id from the rows above) and `<status>` |
 
 Every payload has `hook_event_name`. A `<task-notification>` that arrives
 while the main agent is idle wakes it: `UserPromptSubmit` → turn → `Stop`.
@@ -57,14 +57,14 @@ installed by the kit (`SessionStart`, `UserPromptSubmit`, `Notification`,
 
 Codex 0.164.0, one turn that spawned two subagents without waiting:
 
-| Event | Payload facts |
-| --- | --- |
-| `PostToolUse` `collaborationspawn_agent` | `tool_response` `{"task_name": ...}`, no agent id |
-| `SubagentStart` | `agent_id`, `agent_type` |
-| `Stop` | main turn only, fired while both subagents were running |
-| `PostToolUse` from a subagent | carries `agent_id` |
-| `SubagentStop` | `agent_id`, `agent_transcript_path` |
-| after the last `SubagentStop` | nothing: no `UserPromptSubmit`, no further `Stop` |
+| Event                                    | Payload facts                                           |
+| ---------------------------------------- | ------------------------------------------------------- |
+| `PostToolUse` `collaborationspawn_agent` | `tool_response` `{"task_name": ...}`, no agent id       |
+| `SubagentStart`                          | `agent_id`, `agent_type`                                |
+| `Stop`                                   | main turn only, fired while both subagents were running |
+| `PostToolUse` from a subagent            | carries `agent_id`                                      |
+| `SubagentStop`                           | `agent_id`, `agent_transcript_path`                     |
+| after the last `SubagentStop`            | nothing: no `UserPromptSubmit`, no further `Stop`       |
 
 The workmux state stayed `working` after the test. The Codex hooks installed
 by the kit already include `SubagentStart` and `SubagentStop` (both
@@ -138,24 +138,24 @@ leniently like the existing fields). The command it was invoked with
 (`working`, `waiting`, `done`) stays the fallback when `hook_event_name` is
 missing, so other agents behave as today.
 
-| Event | Effect |
-| --- | --- |
-| `SessionStart` (`register-agent`) | clear `background`, `turn_active = false` (new or resumed conversation: old notifications will not arrive) |
-| `UserPromptSubmit` | `turn_active = true`; if the prompt is a `<task-notification>` with a terminal `<status>`, remove the item with that `<task-id>`; status `working` |
-| `PostToolUse` without `agent_id` | `turn_active = true`; add an item when the response launched background work, remove one when the tool stopped a task (below); status `working` |
-| `PostToolUse` with `agent_id` | refresh the expiry of the subagent item with that id **if tracked**; never add one (a foreground Claude subagent has no completion event and would linger); status follows the derived rule |
-| `SubagentStart` | add a `subagent` item for `agent_id`; status follows the derived rule |
-| `SubagentStop` | remove the item for `agent_id` **only if tracked** (Claude's internal agents are ignored); then: `turn_active` or live items → stay `working`, otherwise `done` |
-| `Notification` / `PermissionRequest` (`waiting`) | status `waiting`, items and `turn_active` unchanged |
-| `Stop` | first remove the items completed during the turn (transcript scan below); then `turn_active = false`; status `working` (shown as background) if live items remain, otherwise `done` |
+| Event                                            | Effect                                                                                                                                                                                      |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SessionStart` (`register-agent`)                | clear `background`, `turn_active = false` (new or resumed conversation: old notifications will not arrive)                                                                                  |
+| `UserPromptSubmit`                               | `turn_active = true`; if the prompt is a `<task-notification>` with a terminal `<status>`, remove the item with that `<task-id>`; status `working`                                          |
+| `PostToolUse` without `agent_id`                 | `turn_active = true`; add an item when the response launched background work, remove one when the tool stopped a task (below); status `working`                                             |
+| `PostToolUse` with `agent_id`                    | refresh the expiry of the subagent item with that id **if tracked**; never add one (a foreground Claude subagent has no completion event and would linger); status follows the derived rule |
+| `SubagentStart`                                  | add a `subagent` item for `agent_id`; status follows the derived rule                                                                                                                       |
+| `SubagentStop`                                   | remove the item for `agent_id` **only if tracked** (Claude's internal agents are ignored); then: `turn_active` or live items → stay `working`, otherwise `done`                             |
+| `Notification` / `PermissionRequest` (`waiting`) | status `waiting`, items and `turn_active` unchanged                                                                                                                                         |
+| `Stop`                                           | first remove the items completed during the turn (transcript scan below); then `turn_active = false`; status `working` (shown as background) if live items remain, otherwise `done`         |
 
 Background launches recognised in a main-turn `PostToolUse` (Claude):
 
-| `tool_name` | Condition | Item |
-| --- | --- | --- |
-| `Bash` | `tool_response.backgroundTaskId` present (covers `run_in_background` and commands moved to the background by the user) | `shell`, id = that value |
-| `Agent` (also `Task`) | `tool_response.status == "async_launched"` | `subagent`, id = `tool_response.agentId` |
-| `Monitor` | `tool_response.taskId` present | `monitor`, id = that value |
+| `tool_name`           | Condition                                                                                                              | Item                                     |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| `Bash`                | `tool_response.backgroundTaskId` present (covers `run_in_background` and commands moved to the background by the user) | `shell`, id = that value                 |
+| `Agent` (also `Task`) | `tool_response.status == "async_launched"`                                                                             | `subagent`, id = `tool_response.agentId` |
+| `Monitor`             | `tool_response.taskId` present                                                                                         | `monitor`, id = that value               |
 
 Background stops recognised in a main-turn `PostToolUse` (Claude): `TaskStop`
 or `KillShell` remove the item whose id is in `tool_input` (`task_id` or
@@ -185,11 +185,11 @@ terminal.
 
 ### Expiry
 
-| Kind | `expires_ts` |
-| --- | --- |
-| `subagent` | last activity (start, or its own `PostToolUse`) + 30 min |
-| `monitor` | start + `timeoutMs` + 2 min; `persistent: true` → start + 24 h |
-| `shell` | start + 12 h (Claude reports no timeout for background commands) |
+| Kind       | `expires_ts`                                                     |
+| ---------- | ---------------------------------------------------------------- |
+| `subagent` | last activity (start, or its own `PostToolUse`) + 30 min         |
+| `monitor`  | start + `timeoutMs` + 2 min; `persistent: true` → start + 24 h   |
+| `shell`    | start + 12 h (Claude reports no timeout for background commands) |
 
 Expired items are ignored by the derived state on every read and dropped on
 the next write. A stored `Working` with an idle turn whose items have all

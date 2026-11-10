@@ -36,10 +36,12 @@
 ### Task 1: Assignment, ordering and display rows
 
 **Files:**
+
 - Create: `src/command/dashboard/unified.rs` (register `mod unified;` in `src/command/dashboard/mod.rs`)
 - Modify: `src/config.rs` (`DashboardConfig.agents_tab: Option<bool>`, `fn agents_tab(&self) -> bool` default `false`, merge like the other dashboard keys)
 
 **Interfaces:**
+
 - Produces (in `unified.rs`, all `pub(super)` or `pub(crate)`):
   - `#[derive(Debug, Clone, PartialEq, Eq)] pub enum DisplayRow { Worktree(usize), Agent { pane_id: String, parent: Option<usize> }, Orphan(usize), OutsideHeader }` — `Worktree(i)`/`parent: Some(i)` index `App.worktrees` (the visible, filtered list); `Orphan(i)` indexes `App.visible_orphans`
   - `pub fn assign_agents(worktree_paths: &[PathBuf], agents: &[AgentPane]) -> Vec<Option<usize>>` — per agent, the index into `worktree_paths` of the deepest ancestor-or-equal (canonicalise both sides with `canon_or_self` as `src/workflow/list.rs` does), `None` when unassigned
@@ -67,9 +69,11 @@
 ### Task 2: App row model, selection, Enter and actions
 
 **Files:**
+
 - Modify: `src/command/dashboard/app/mod.rs` (fields, `refresh`, keymap context), `src/command/dashboard/app/worktrees.rs` (row model, navigation, selection, Enter, actions), `src/command/dashboard/app/types.rs` (`MouseRowId::WorktreeAgent(String)` if needed by Task 3), `src/command/dashboard/mod.rs` (`--tab agents` ignored when `agents_tab` is false; initial tab Worktrees), `src/command/dashboard/actions.rs` (`SwitchTab` no-op when `agents_tab` is false)
 
 **Interfaces:**
+
 - Consumes: Task 1 `DisplayRow`, `build_display_rows`, `RowInputs`, `worktree_visible_by_agent`, `is_selectable`, `Config::dashboard.agents_tab()`.
 - Produces:
   - `App.unified: bool` (= `!config.dashboard.agents_tab()`), `App.host_agents: Vec<AgentPane>` (reconciled agents **before** `scope_mode.retain_agents`; refreshed in `refresh()`), `App.display_rows: Vec<DisplayRow>`
@@ -101,9 +105,11 @@
 ### Task 3: Rendering, mouse and tab chrome
 
 **Files:**
+
 - Modify: `src/command/dashboard/ui/worktree.rs` (table rows from `display_rows`; agent and header rows; agent column hidden in unified mode), `src/command/dashboard/ui/dashboard.rs` (tab header and footer), `src/command/dashboard/mouse.rs` (row hit-testing and ids over `display_rows`, footer items, tab clicks), `src/command/dashboard/keymap.rs` + `src/command/dashboard/ui/help.rs` + `src/command/dashboard/actions.rs` palette (no Tab entry in unified mode)
 
 **Interfaces:**
+
 - Consumes: `App.display_rows`, `App.unified`, `App.host_agents`, the Agents-tab status rendering (`App::get_status_display` / `get_elapsed` / `is_stale`) — reuse, do not duplicate the icon rules.
 - Produces:
   - `fn agent_row_cells(app: &App, agent: &AgentPane, outside: bool, columns: &[WorktreeColumn]) -> Row` — first column holds `└ ` + status spans + elapsed + title (+ ` (~/…)` when `outside`), remaining cells empty; dimmed when stale
@@ -126,6 +132,7 @@
 ### Task 4: Documentation and real dashboard check
 
 **Files:**
+
 - Modify: `FORK.md`, `docs/src/content/docs/guide/dashboard/index.mdx`, the dashboard configuration page that documents `worktree_columns` (find it under `docs/src/content/docs/guide/dashboard/`), kit `/home/tore/workspaces/octolabs-worktree/feat-workmux-info/docs/workmux.md` (Italian, one bullet in the fork section)
 
 - [ ] **Step 1: Document** the unified view (rows, outside group, Enter, actions from sub-rows, filter/picker rules), the `dashboard.agents_tab` key and what it restores, in `FORK.md` and the dashboard docs; `cd docs && npx -y oxfmt@latest --check <changed files>`.

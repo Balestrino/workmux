@@ -17,7 +17,7 @@
 - New `AgentState` fields are `#[serde(default, skip_serializing_if = ...)]`; existing state files must load unchanged.
 - `workmux status` keeps the labels `working`, `waiting`, `done` and adds `background: true` only for entries in the background state.
 - Expiry: subagent = last activity + 1800 s; monitor = start + `timeoutMs`/1000 + 120 s, `persistent: true` → start + 86400 s; shell = start + 43200 s.
-- Transcript scan reads at most the last 8 MiB (8 * 1024 * 1024 bytes).
+- Transcript scan reads at most the last 8 MiB (`8 * 1024 * 1024` bytes).
 - Default background icon `⏳`, config key `status_icons.background`; set on the tmux window with auto-clear **off**.
 - Sandbox RPC (`src/sandbox/rpc.rs`) behaviour is unchanged (passes no event).
 - Every commit ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`; `cargo fmt --all -- --check` and `cargo clippy --all-targets` clean before each commit.
@@ -35,10 +35,12 @@
 ### Task 1: Background state model
 
 **Files:**
+
 - Create: `src/state/background.rs`
 - Modify: `src/state/mod.rs` (add `pub mod background;`), `src/state/types.rs` (`AgentState` fields, `to_agent_pane`), `src/multiplexer/types.rs` (`AgentPane.background`), every `AgentState { .. }` / `AgentPane { .. }` literal the compiler flags (test fixtures: add the new fields with defaults)
 
 **Interfaces:**
+
 - Produces:
   - `#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)] #[serde(rename_all = "lowercase")] pub enum BackgroundKind { Subagent, Shell, Monitor }`
   - `#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)] pub struct BackgroundItem { pub id: String, pub kind: BackgroundKind, pub started_ts: u64, pub expires_ts: u64, #[serde(default, skip_serializing_if = "Option::is_none")] pub transcript_offset: Option<u64> }` — `transcript_offset` is the next byte to scan.
@@ -65,10 +67,12 @@
 ### Task 2: Hook events and task notifications
 
 **Files:**
+
 - Modify: `src/command/set_window_status.rs` (`HookInput` fields, `HookInput::event`), `src/state/background.rs` (notification parser)
 - Test: same files; payload fixtures copied from the captured sessions (shapes in the spec's Evidence tables)
 
 **Interfaces:**
+
 - Consumes: `BackgroundKind` (Task 1).
 - Produces:
   - in `background.rs`: `#[derive(Debug, Clone, PartialEq, Eq)] pub struct Launch { pub id: String, pub kind: BackgroundKind, pub timeout_secs: Option<u64>, pub persistent: bool }`
@@ -93,9 +97,11 @@
 ### Task 3: Event transition and transcript scan
 
 **Files:**
+
 - Modify: `src/state/background.rs`
 
 **Interfaces:**
+
 - Consumes: Task 1 items, Task 2 `HookEvent`, `Launch`, `terminal_task_ids`.
 - Produces:
   - `pub fn transition(turn_active: &mut bool, items: &mut Vec<BackgroundItem>, event: &HookEvent, previous: Option<AgentStatus>, transcript: Option<&Path>, now: u64) -> AgentStatus` — returns the status to store (`Working`, `Waiting` or `Done`); `previous` is the stored status before the event
@@ -129,9 +135,11 @@
 ### Task 4: Wire the transition into status hooks
 
 **Files:**
+
 - Modify: `src/state/mod.rs` (`persist_agent_update`, `persist_agent_registration`, `persist_agent_snapshot(_locked)`), `src/command/set_window_status.rs` (`run`, `register_agent`, `apply_status_update`), `src/sandbox/rpc.rs` (pass `None`), `src/config.rs` (`StatusIcons.background`)
 
 **Interfaces:**
+
 - Consumes: `transition`, `HookEvent`, `HookInput::event`, `HookInput::transcript_path` (exists).
 - Produces:
   - `pub struct StatusEvent { pub event: HookEvent, pub transcript: Option<PathBuf> }` in `src/state/mod.rs`
@@ -153,9 +161,11 @@
 ### Task 5: Render the background state
 
 **Files:**
+
 - Modify: `src/command/dashboard/app/agents.rs` (`get_status_display`), `src/command/dashboard/ui/format.rs` (`count_agent_statuses`, `format_agent_status_summary`), `src/workflow/types.rs` (`AgentStatusSummary`), `src/workflow/list.rs` (summary building), `src/command/list.rs` (`format_status_label`, `format_agent_status`), `src/command/status.rs` (`StatusEntry`), `src/command/sidebar/ui.rs` (`status_icon_and_style`), `src/command/sidebar/snapshot.rs`, `src/command/sidebar/daemon.rs` (`InactivityTracker::check_with`), `src/multiplexer/mod.rs:838` if it maps status to icons
 
 **Interfaces:**
+
 - Consumes: `AgentPane.background`, `StatusIcons::background()`.
 - Produces:
   - `AgentStatusSummary { pub statuses: Vec<AgentStatus>, pub background: usize }` — `background` counts matched agents with `AgentPane.background`; their status stays `Working` in `statuses`
@@ -177,6 +187,7 @@
 ### Task 6: Documentation and real-agent check
 
 **Files:**
+
 - Modify: `docs/src/content/docs/guide/status-tracking.mdx`, `docs/src/content/docs/guide/configuration.md` (`status_icons.background`), `FORK.md` (fork features)
 
 - [ ] **Step 1: Document** the background state (what counts, ⏳, expiry values, Claude and Codex behaviour) in `status-tracking.mdx`, the new icon key in `configuration.md`, one bullet in `FORK.md`. Check formatting with `cd docs && npx -y oxfmt@latest --check <changed .md/.mdx files>`.
