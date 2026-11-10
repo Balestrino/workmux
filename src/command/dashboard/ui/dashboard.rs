@@ -1534,4 +1534,34 @@ mod tests {
         assert!(footer.contains(&"/ fork".to_string()), "{footer:?}");
         assert_eq!(footer.last().map(String::as_str), Some("q Quit"));
     }
+
+    /// The mouse layer lists the same texts (see the test of the same name
+    /// in `mouse`); a missing entry shifts every click after it.
+    #[test]
+    fn worktree_footer_matches_the_drawn_entries() {
+        let palette = palette();
+        let footer: Vec<String> = worktree_footer_entries("age", "fork", false, &palette)
+            .iter()
+            .map(|item| spans_text(item))
+            .collect();
+        assert_eq!(
+            footer,
+            [
+                "Enter Open",
+                "a Add",
+                "r Remove",
+                "R Sweep",
+                "c Close",
+                "o PR",
+                "1-9 Jump",
+                "s Sort (age)",
+                "p Project",
+                "i Info",
+                "l Log",
+                "/ fork",
+                "Tab Agents",
+                "q Quit",
+            ]
+        );
+    }
 }

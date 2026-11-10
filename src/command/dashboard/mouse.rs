@@ -686,7 +686,10 @@ fn worktree_footer_items(app: &App) -> Vec<FooterItem> {
 
 /// Worktree footer items; no Tab entry in the unified view (no Agents tab).
 fn worktree_footer_items_for(sort: &str, filter: &str, unified: bool) -> Vec<FooterItem> {
+    // Same entries, in the same order, as the footer the UI draws
+    // (`worktree_footer_entries`): a click is located by adding up widths.
     let mut items = vec![
+        FooterItem::action("Enter Open", Action::JumpToSelectedWorktree),
         FooterItem::action("a Add", Action::AddWorktree),
         FooterItem::action("r Remove", Action::RemoveSelectedWorktree),
         FooterItem::action("R Sweep", Action::StartSweep),
@@ -1233,5 +1236,34 @@ mod tests {
         assert!(texts.contains(&"Tab Agents"), "{texts:?}");
         assert!(texts.contains(&"/ fork"), "{texts:?}");
         assert!(texts.contains(&"s Sort (age)"), "{texts:?}");
+    }
+
+    /// The drawn footer lists the same texts (see the test of the same name
+    /// in `ui::dashboard`); a missing entry shifts every click after it.
+    #[test]
+    fn worktree_footer_matches_the_drawn_entries() {
+        let texts: Vec<String> = worktree_footer_items_for("age", "fork", false)
+            .into_iter()
+            .map(|item| item.text)
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "Enter Open",
+                "a Add",
+                "r Remove",
+                "R Sweep",
+                "c Close",
+                "o PR",
+                "1-9 Jump",
+                "s Sort (age)",
+                "p Project",
+                "i Info",
+                "l Log",
+                "/ fork",
+                "Tab Agents",
+                "q Quit",
+            ]
+        );
     }
 }
