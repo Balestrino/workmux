@@ -200,6 +200,21 @@ impl AgentState {
         }
     }
 
+    /// When the status shown at `now` began: the expiry of the last
+    /// background item once they have all expired (the agent became done
+    /// then), otherwise the stored status timestamp.
+    pub fn effective_status_ts(&self, now: u64) -> Option<u64> {
+        self.expired_at(now).or(self.status_ts)
+    }
+
+    /// When the last background item expired, if expiry is what made the
+    /// agent done.
+    fn expired_at(&self, now: u64) -> Option<u64> {
+        self.background_expired(now)
+            .then(|| self.background.iter().map(|item| item.expires_ts).max())
+            .flatten()
+    }
+
     /// Whether the stored `Working` only stood for background work that has
     /// all expired by `now`.
     fn background_expired(&self, now: u64) -> bool {
@@ -220,10 +235,7 @@ impl AgentState {
             .unwrap_or(0);
         // Once background work has expired the agent became done when the
         // last item expired, so its timestamps start there.
-        let expired_at = self
-            .background_expired(now)
-            .then(|| self.background.iter().map(|item| item.expires_ts).max())
-            .flatten();
+        let expired_at = self.expired_at(now);
         AgentPane {
             session,
             window_name,

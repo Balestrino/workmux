@@ -390,7 +390,15 @@ fn persist_agent_snapshot_locked(
     // Resolve status: explicit update wins, otherwise preserve existing
     let final_status = status.or(existing.as_ref().and_then(|e| e.status));
 
-    let previous_status = existing.as_ref().and_then(|state| state.status);
+    // The status this write replaces. For a status-less write that is the
+    // stored one, left as it is. A write with a status compares against what
+    // the agent showed (fork): expired background work already reads as done
+    // since the expiry, so a new turn is a transition with its own timestamp.
+    let (previous_status, previous_status_ts) = match (&existing, status) {
+        (Some(state), Some(_)) => (state.effective_status(now), state.effective_status_ts(now)),
+        (Some(state), None) => (state.status, state.status_ts),
+        (None, _) => (None, None),
+    };
 
     // A remote agent's transitions happened on the node, at its timestamp.
     let transition_ts = remote
@@ -403,9 +411,7 @@ fn persist_agent_snapshot_locked(
     let status_ts = match final_status {
         None => None,
         Some(_) if remote.is_some() && status.is_some() => Some(transition_ts),
-        Some(_) if final_status == previous_status => {
-            Some(existing.as_ref().and_then(|e| e.status_ts).unwrap_or(now))
-        }
+        Some(_) if final_status == previous_status => Some(previous_status_ts.unwrap_or(now)),
         Some(_) => Some(now),
     };
 
@@ -774,6 +780,137 @@ mod tests {
         assert!(!turn_active);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "s1");
+    }
+
+    /// A record of pane `%1` (`state_with_prompt`) whose turn ended at 100
+    /// with one background item that expired at 500.
+    fn store_with_expired_background() -> (StateStore, tempfile::TempDir, AgentState) {
+        let (store, dir) = test_support::temp_store();
+        let mut existing = state_with_prompt("p");
+        existing.boot_id = Some("boot".into());
+        existing.status_ts = Some(100);
+        existing.activity_ts = Some(100);
+        existing.background = vec![BackgroundItem {
+            expires_ts: 500,
+            ..live_item("s1")
+        }];
+        store.upsert_agent(&existing).unwrap();
+        (store, dir, existing)
+    }
+
+    /// A status write for pane `%1` of the same process, as a hook makes it.
+    fn write_status(store: &StateStore, status: Option<AgentStatus>, event: Option<HookEvent>) {
+        let snapshot = LivePaneSnapshot {
+            pane: crate::multiplexer::LivePaneInfo {
+                pid: Some(1),
+                current_command: Some("claude".into()),
+                working_dir: "/repo".into(),
+                title: None,
+                session: None,
+                window: None,
+                session_id: None,
+                window_id: None,
+                window_index: None,
+            },
+            boot_id: Some("boot".into()),
+        };
+        store
+            .with_agent_lock(|store| {
+                persist_agent_snapshot_locked(
+                    store,
+                    test_support::default_pane_key(),
+                    snapshot,
+                    status,
+                    None,
+                    None,
+                    PromptUpdate::Keep,
+                    None,
+                    event.map(|event| StatusEvent {
+                        event,
+                        transcript: None,
+                    }),
+                    true,
+                    None,
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn shown(store: &StateStore) -> crate::multiplexer::AgentPane {
+        store
+            .get_agent(&test_support::default_pane_key())
+            .unwrap()
+            .unwrap()
+            .to_agent_pane(String::new(), String::new())
+    }
+
+    /// Expired background work reads as done since the expiry, which is the
+    /// state `send --wait` fences on. The next prompt must be a transition
+    /// newer than that, or the wait never sees the turn and reports a stall.
+    #[test]
+    fn a_turn_after_expired_background_work_is_a_new_transition() {
+        let (store, _dir, existing) = store_with_expired_background();
+        let before = existing.to_agent_pane(String::new(), String::new());
+        assert_eq!(
+            (before.status, before.status_ts),
+            (Some(AgentStatus::Done), Some(500))
+        );
+        let fence = sent::TurnFence {
+            status: before.status,
+            status_ts: before.status_ts,
+            sent_at: 1000,
+        };
+
+        write_status(
+            &store,
+            Some(AgentStatus::Working),
+            Some(HookEvent::PromptSubmit { prompt: None }),
+        );
+
+        let turn = shown(&store);
+        assert_eq!(turn.status, Some(AgentStatus::Working));
+        assert!(
+            fence.admits(turn.status, turn.status_ts),
+            "status_ts {:?} is not after the fence",
+            turn.status_ts
+        );
+        assert!(turn.activity_ts() > Some(500), "{:?}", turn.activity_ts());
+    }
+
+    /// A write that leaves the expired agent done (a late `Stop`) keeps the
+    /// time it became done, the expiry, not the start of the old turn.
+    #[test]
+    fn done_after_expired_background_work_keeps_the_expiry_time() {
+        let (store, _dir, _) = store_with_expired_background();
+        write_status(&store, Some(AgentStatus::Done), Some(HookEvent::Stop));
+        let after = shown(&store);
+        assert_eq!(
+            (after.status, after.status_ts),
+            (Some(AgentStatus::Done), Some(500))
+        );
+    }
+
+    /// A status-less write (a title update) is no transition: the stored
+    /// status and its timestamp stay, and the agent still reads as done
+    /// since the expiry.
+    #[test]
+    fn a_status_less_write_leaves_expired_background_work_alone() {
+        let (store, _dir, _) = store_with_expired_background();
+        write_status(&store, None, None);
+        let stored = store
+            .get_agent(&test_support::default_pane_key())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (stored.status, stored.status_ts),
+            (Some(AgentStatus::Working), Some(100))
+        );
+        let after = shown(&store);
+        assert_eq!(
+            (after.status, after.status_ts),
+            (Some(AgentStatus::Done), Some(500))
+        );
     }
 
     #[test]
