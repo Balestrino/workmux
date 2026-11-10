@@ -394,10 +394,14 @@ fn persist_agent_snapshot_locked(
     // stored one, left as it is. A write with a status compares against what
     // the agent showed (fork): expired background work already reads as done
     // since the expiry, so a new turn is a transition with its own timestamp.
-    let (previous_status, previous_status_ts) = match (&existing, status) {
-        (Some(state), Some(_)) => (state.effective_status(now), state.effective_status_ts(now)),
-        (Some(state), None) => (state.status, state.status_ts),
-        (None, _) => (None, None),
+    let (previous_status, previous_status_ts, previous_activity_ts) = match (&existing, status) {
+        (Some(state), Some(_)) => (
+            state.effective_status(now),
+            state.effective_status_ts(now),
+            state.effective_activity_ts(now),
+        ),
+        (Some(state), None) => (state.status, state.status_ts, state.activity_ts()),
+        (None, _) => (None, None, None),
     };
 
     // A remote agent's transitions happened on the node, at its timestamp.
@@ -415,7 +419,6 @@ fn persist_agent_snapshot_locked(
         Some(_) => Some(now),
     };
 
-    let previous_activity_ts = existing.as_ref().and_then(AgentState::activity_ts);
     let activity_ts = resolve_activity_ts(
         preserve_existing,
         status,
@@ -529,7 +532,8 @@ fn resolve_background(
         &mut turn_active,
         &mut items,
         &event.event,
-        existing.and_then(|state| state.status),
+        // What the agent showed: expired background work reads as done.
+        existing.and_then(|state| state.effective_status(now)),
         event.transcript.as_deref(),
         now,
     );
@@ -888,6 +892,29 @@ mod tests {
         assert_eq!(
             (after.status, after.status_ts),
             (Some(AgentStatus::Done), Some(500))
+        );
+        // Its place in recency order stays where the expiry put it.
+        assert_eq!(after.activity_ts(), Some(500));
+    }
+
+    /// A subagent that calls a tool after its item expired is untracked and
+    /// the turn is over: the agent stays done, as it read before the call.
+    #[test]
+    fn a_late_subagent_tool_call_leaves_expired_background_work_done() {
+        let (store, _dir, _) = store_with_expired_background();
+        write_status(
+            &store,
+            Some(AgentStatus::Working),
+            Some(HookEvent::ToolUse {
+                agent_id: Some("s1".into()),
+                launch: None,
+                stopped: None,
+            }),
+        );
+        let after = shown(&store);
+        assert_eq!(
+            (after.status, after.status_ts, after.background),
+            (Some(AgentStatus::Done), Some(500), false)
         );
     }
 
