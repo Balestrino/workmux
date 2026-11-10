@@ -277,8 +277,40 @@ fn persist_agent_snapshot(
                 return Ok(resolved);
             }
         }
-        warn!(%pane_id, "agent state changed during every snapshot attempt, skipping state persist");
-        Ok(None)
+        if event.is_none() {
+            warn!(%pane_id, "agent state changed during every snapshot attempt, skipping state persist");
+            return Ok(None);
+        }
+        // Fork: a hook event is a step of the background state (a launch, a
+        // stop) that no later write repeats, so it is not dropped like a
+        // plain status. Its last attempt takes the snapshot under the lock,
+        // where no other writer can invalidate it.
+        store.with_agent_lock(|store| {
+            let snapshot = match mux.get_live_pane_snapshot(pane_id) {
+                Ok(Some(snapshot)) => snapshot,
+                Ok(None) => {
+                    warn!(%pane_id, "pane not found, skipping state persist");
+                    return Ok(None);
+                }
+                Err(error) => {
+                    warn!(%error, "failed to get live pane snapshot, skipping state persist");
+                    return Ok(None);
+                }
+            };
+            Ok(persist_agent_snapshot_locked(
+                store,
+                pane_key.clone(),
+                snapshot,
+                status,
+                title_override.clone(),
+                agent_session_id.clone(),
+                prompt.clone(),
+                cwd.clone(),
+                event.clone(),
+                preserve_existing,
+                remote.clone(),
+            ))
+        })
     })();
     match result {
         Ok(resolved) => resolved,
