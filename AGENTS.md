@@ -28,14 +28,18 @@ of the Octolabs Worktree kit. Only what is specific to this repository is here.
   `cargo fmt --all -- --check`, `cargo clippy --all-targets` and
   `cargo test --bin workmux`; the integration suite for a change in behaviour.
   A build is heavy: one at a time, at low priority on a shared host.
-- **Commits and PRs:** a feature branch from `main`, merged back with a merge
-  commit (`--no-ff`), never squashed or rebased. Upstream comes in by merging
+- **Commits and PRs:** Conventional Commits. A feature branch from `main`,
+  merged back with a merge commit (`--no-ff`), never squashed or rebased. The
+  session merges its own branch once the checks are green and an independent
+  review has passed, unless its brief says to ask first. Upstream comes in by merging
   `upstream/main`. Notes about the fork go in `FORK.md` or `docs/superpowers/`,
   not in upstream files. Every departure from upstream behaviour is recorded in
   FORK.md, "Upstream level and differences from upstream".
-- **A person's yes is needed for:** to be defined. No written rule says who may
-  merge into `main` or install a new build as a host's `workmux`: until there
-  is one, the session's brief says it.
+- **A person's yes is needed for:** nothing in this repository, unless the
+  brief says otherwise. Installing a build is not the session's step: whoever
+  coordinates the sessions installs it as the host's `workmux`, after trying it
+  on an isolated tmux server and keeping a copy of the previous binary, and
+  reports it to the person they work for.
 - **Never:** rebase or rewrite `main`; open a pull request toward
   `raine/workmux` (changes are not proposed upstream); edit an upstream file
   only to document the fork; commit host names, paths or credentials (this fork
