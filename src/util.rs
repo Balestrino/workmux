@@ -206,11 +206,29 @@ pub(crate) fn expand_worktree_dir_with_home(
     }
 }
 
-/// Terminal cell width of a string.
+/// Terminal cell width of one grapheme, as ratatui and tmux measure it: an
+/// emoji followed by the variation selector U+FE0F (such as ⚠️) takes two
+/// cells, although its base character alone takes one. Control characters
+/// count as one cell.
+pub(crate) fn grapheme_width(grapheme: &str) -> usize {
+    let width = unicode_width::UnicodeWidthStr::width(grapheme);
+    if width == 0
+        && grapheme
+            .chars()
+            .any(|c| unicode_width::UnicodeWidthChar::width(c).is_none())
+    {
+        1
+    } else {
+        width
+    }
+}
+
+/// Terminal cell width of a string, summed per grapheme. Summing per
+/// character undercounts emoji with a variation selector, and a row laid out
+/// that way overflows its pane by one cell.
 pub(crate) fn display_width(s: &str) -> usize {
-    s.chars()
-        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(1))
-        .sum()
+    use unicode_segmentation::UnicodeSegmentation;
+    s.graphemes(true).map(grapheme_width).sum()
 }
 
 /// Shorten a string to at most `max_width` terminal cells, ending in `…` when
@@ -226,15 +244,18 @@ pub(crate) fn truncate_with_ellipsis(s: &str, max_width: usize) -> String {
         return "\u{2026}".to_string();
     }
 
+    use unicode_segmentation::UnicodeSegmentation;
     let mut out = String::new();
     let mut width = 0;
-    for c in s.chars() {
-        let char_width = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
-        if width + char_width + 1 > max_width {
+    // Whole graphemes only: cutting between an emoji and its variation
+    // selector would change the width of what remains.
+    for grapheme in s.graphemes(true) {
+        let grapheme_width = grapheme_width(grapheme);
+        if width + grapheme_width + 1 > max_width {
             break;
         }
-        out.push(c);
-        width += char_width;
+        out.push_str(grapheme);
+        width += grapheme_width;
     }
     let trimmed = out.trim_end();
     let mut result = trimmed.to_string();
@@ -305,6 +326,36 @@ pub fn format_elapsed_duration(d: Duration) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn display_width_counts_emoji_with_variation_selector_as_two_cells() {
+        use super::display_width;
+        assert_eq!(display_width("\u{26a0}\u{fe0f}"), 2);
+        assert_eq!(display_width("\u{26a0}"), 1);
+        assert_eq!(display_width("\u{26a0}\u{fe0f} +28 -22"), 10);
+        assert_eq!(display_width("\u{2705}"), 2);
+        assert_eq!(display_width("abc"), 3);
+        assert_eq!(display_width("e\u{301}"), 1);
+        assert_eq!(display_width("\u{7}"), 1);
+    }
+
+    #[test]
+    fn truncate_with_ellipsis_never_splits_an_emoji_from_its_variation_selector() {
+        use super::{display_width, truncate_with_ellipsis};
+        let text = "ab\u{26a0}\u{fe0f}cd";
+        assert_eq!(truncate_with_ellipsis(text, 6), text);
+        assert_eq!(
+            truncate_with_ellipsis(text, 5),
+            "ab\u{26a0}\u{fe0f}\u{2026}"
+        );
+        assert_eq!(truncate_with_ellipsis(text, 4), "ab\u{2026}");
+        for width in 1..=6 {
+            assert!(
+                display_width(&truncate_with_ellipsis(text, width)) <= width,
+                "{width}"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

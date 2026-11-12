@@ -33,6 +33,7 @@ mod tips;
 mod tmux_style;
 mod ui;
 mod util;
+mod wide_cell_backend;
 mod workflow;
 mod workspaces;
 mod xdg;
