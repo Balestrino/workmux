@@ -146,6 +146,16 @@ pub fn is_codegraph_server(args: &[String]) -> bool {
     rest.iter().any(|arg| arg == "serve") && rest.iter().any(|arg| arg == "--mcp")
 }
 
+/// Whether a command line is the `workmux sandbox run` supervisor.
+fn is_sandbox_supervisor(args: &[String]) -> bool {
+    args.iter()
+        .position(|arg| arg.rsplit('/').next() == Some("workmux"))
+        .is_some_and(|i| {
+            args.get(i + 1).map(String::as_str) == Some("sandbox")
+                && args.get(i + 2).map(String::as_str) == Some("run")
+        })
+}
+
 /// Parent links and command lines of the processes under a `/proc` root,
 /// read once per worker pass.
 #[derive(Debug, Default)]
@@ -193,10 +203,13 @@ impl ProcTable {
     }
 
     /// Whether a CodeGraph server runs among the descendants of `pane_pid`.
+    /// A pane running a workmux sandbox (container or Lima) hosts its agent
+    /// elsewhere, so without a local server its connection is unknown.
     pub fn connection(&self, pane_pid: Option<u32>) -> Connection {
         let Some(root) = pane_pid else {
             return Connection::Unknown;
         };
+        let mut sandboxed = false;
         let mut seen = std::collections::HashSet::from([root]);
         let mut queue = std::collections::VecDeque::from([root]);
         while let Some(pid) = queue.pop_front() {
@@ -204,17 +217,20 @@ impl ProcTable {
                 if !seen.insert(child) {
                     continue;
                 }
-                if self
-                    .cmdlines
-                    .get(&child)
-                    .is_some_and(|args| is_codegraph_server(args))
-                {
-                    return Connection::Yes;
+                if let Some(args) = self.cmdlines.get(&child) {
+                    if is_codegraph_server(args) {
+                        return Connection::Yes;
+                    }
+                    sandboxed |= is_sandbox_supervisor(args);
                 }
                 queue.push_back(child);
             }
         }
-        Connection::No
+        if sandboxed {
+            Connection::Unknown
+        } else {
+            Connection::No
+        }
     }
 }
 
@@ -239,9 +255,27 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Runs `codegraph status --json <root>` at the lowest CPU and I/O priority.
 /// The only CodeGraph command the sidebar runs; it creates and removes
 /// SQLite's `-wal`/`-shm` files but never changes the index.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CodegraphProber {
     has_ionice: Option<bool>,
+    program: PathBuf,
+    timeout: Duration,
+}
+
+impl Default for CodegraphProber {
+    fn default() -> Self {
+        Self::with_program(Path::new("codegraph"), PROBE_TIMEOUT)
+    }
+}
+
+impl CodegraphProber {
+    pub fn with_program(program: &Path, timeout: Duration) -> Self {
+        Self {
+            has_ionice: None,
+            program: program.to_path_buf(),
+            timeout,
+        }
+    }
 }
 
 impl Prober for CodegraphProber {
@@ -256,21 +290,21 @@ impl Prober for CodegraphProber {
             command.args(["ionice", "-c3"]);
         }
         command
-            .args(["codegraph", "status", "--json"])
+            .arg(&self.program)
+            .args(["status", "--json"])
             .arg(root)
             .current_dir(root)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         let mut child = command.spawn().ok()?;
-        let deadline = Instant::now() + PROBE_TIMEOUT;
+        let deadline = Instant::now() + self.timeout;
         loop {
             match child.try_wait() {
                 Ok(Some(status)) if status.success() => break,
                 Ok(Some(_)) | Err(_) => return None,
                 Ok(None) if Instant::now() >= deadline => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    stop(&mut child);
                     return None;
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(100)),
@@ -280,6 +314,30 @@ impl Prober for CodegraphProber {
         std::io::Read::read_to_string(&mut child.stdout.take()?, &mut output).ok()?;
         parse_status_json(&output)
     }
+}
+
+/// How long a timed-out probe gets to exit after SIGTERM before SIGKILL.
+const PROBE_STOP_GRACE: Duration = Duration::from_secs(2);
+
+/// Stop a timed-out probe: SIGTERM first, so SQLite can close the database
+/// and remove its `-wal`/`-shm` files, SIGKILL only if it does not exit.
+fn stop(child: &mut std::process::Child) {
+    if let Ok(pid) = i32::try_from(child.id()) {
+        // SAFETY: plain kill(2) on our own child's pid, which we have not
+        // reaped yet, so it cannot have been reused.
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+        let deadline = Instant::now() + PROBE_STOP_GRACE;
+        while Instant::now() < deadline {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Per-root probe bookkeeping kept by the worker between passes.
@@ -499,6 +557,49 @@ mod tests {
         assert_eq!(table.connection(Some(10)), Connection::Yes);
         assert_eq!(table.connection(Some(20)), Connection::No);
         assert_eq!(table.connection(None), Connection::Unknown);
+    }
+
+    #[test]
+    fn sandboxed_pane_is_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fake_proc(root, 30, 1, &["/bin/bash"]);
+        fake_proc(
+            root,
+            31,
+            30,
+            &[
+                "/usr/local/bin/workmux",
+                "sandbox",
+                "run",
+                "/w",
+                "--",
+                "claude",
+            ],
+        );
+        fake_proc(root, 32, 31, &["docker", "exec", "-it", "c1", "claude"]);
+        let table = ProcTable::read(root).unwrap();
+        assert_eq!(table.connection(Some(30)), Connection::Unknown);
+    }
+
+    #[test]
+    fn timed_out_probe_is_asked_to_stop_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("terminated");
+        let script = dir.path().join("slow-codegraph");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/bash\ntrap 'echo yes > {}; exit 0' TERM\nsleep 30 &\nwait\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut prober = CodegraphProber::with_program(&script, Duration::from_secs(1));
+        assert_eq!(prober.probe(dir.path()), None);
+        assert!(marker.exists(), "the probe got SIGTERM before any SIGKILL");
     }
 
     #[test]

@@ -163,7 +163,13 @@ impl ResolvedAgentIcons {
 }
 
 const DEFAULT_COMPACT_TEMPLATE: &str = "{status_icon} {primary} {pane_suffix} {fill} {elapsed}";
-const DEFAULT_TILE_TEMPLATES: &[&str] = &[
+/// The frame after `frame` on the 250 ms redraw tick. The cycle of 20 is a
+/// multiple of the 10 spinner frames and of the knowledge-graph blink's 4.
+pub(crate) fn next_spinner_frame(frame: u8) -> u8 {
+    frame.wrapping_add(1) % 20
+}
+
+pub(crate) const DEFAULT_TILE_TEMPLATES: &[&str] = &[
     "{primary} {pane_suffix} {fill} {elapsed}",
     "{secondary} {fill} {git_stats}",
     "{pane_title} {fill} {pr_number} {pr_checks}",
@@ -834,7 +840,7 @@ impl SidebarApp {
     }
 
     pub fn tick(&mut self) {
-        self.spinner_frame = self.spinner_frame.wrapping_add(1) % 10;
+        self.spinner_frame = next_spinner_frame(self.spinner_frame);
     }
 
     /// Conservative refresh interval for state that can produce time-dependent content.

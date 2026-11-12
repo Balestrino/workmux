@@ -870,6 +870,27 @@ mod tests {
     }
 
     #[test]
+    fn knowledge_graph_blink_is_regular_across_the_tick_wrap() {
+        use crate::knowledge_graph::KnowledgeGraphState as S;
+        let agent = test_agent();
+        let mut ctx = make_context(&agent, None, 0);
+        ctx.knowledge_graph = Some(S::Active);
+        let palette = test_palette();
+        let mut frame = 0u8;
+        let mut colors = Vec::new();
+        for _ in 0..48 {
+            ctx.spinner_frame = frame;
+            colors.push(ctx.intrinsic_style(TokenId::KnowledgeGraph).fg);
+            frame = crate::command::sidebar::app::next_spinner_frame(frame);
+        }
+        for (tick, color) in colors.iter().enumerate() {
+            let on = (tick / 2) % 2 == 0;
+            let expected = if on { palette.success } else { palette.dimmed };
+            assert_eq!(*color, Some(expected), "tick {tick}");
+        }
+    }
+
+    #[test]
     fn knowledge_graph_token_text() {
         use crate::knowledge_graph::KnowledgeGraphState as S;
         let agent = test_agent();
