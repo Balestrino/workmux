@@ -164,6 +164,9 @@ pub struct StatusIcons {
     /// Icon shown when the agent's turn has ended but background work it
     /// started is still running. Default: ⏳
     pub background: Option<String>,
+    /// Icon the sidebar shows for a stale agent: nothing left to look at and
+    /// no activity for `stale_after`, or asleep. Default: 💤
+    pub stale: Option<String>,
 }
 
 impl StatusIcons {
@@ -181,6 +184,10 @@ impl StatusIcons {
 
     pub fn background(&self) -> &str {
         self.background.as_deref().unwrap_or("⏳")
+    }
+
+    pub fn stale(&self) -> &str {
+        self.stale.as_deref().unwrap_or("💤")
     }
 }
 
@@ -3458,6 +3465,7 @@ impl Config {
                 .status_icons
                 .background
                 .or(self.status_icons.background),
+            stale: project.status_icons.stale.or(self.status_icons.stale),
         };
 
         // Dashboard actions: per-field override
@@ -3957,6 +3965,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 #   waiting: "💬"
 #   done: "✅"
 #   background: "⏳"
+#   stale: "💤"  # sidebar only
 
 #-------------------------------------------------------------------------------
 # Agent & AI
