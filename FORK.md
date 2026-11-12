@@ -133,8 +133,8 @@ upstream behaviour in these points:
     wraps the backend: it drops a blank inside a wide symbol just drawn, and
     blanks the cell an emoji will widen into before drawing it.
 
-  Measured on an isolated tmux server (tmux 3.5a): 600 random rows redrawn
-  through ratatui's backend came out wrong 452 times, 0 through the wrapper;
+  Measured on an isolated tmux server (tmux 3.5a): 1,200 random rows redrawn
+  through ratatui's backend came out wrong 847 times, 0 through the wrapper;
   the real 25-column sidebar now matches a fresh redraw at every step. Fixed
   2026-11-12; revertible on its own. The dashboard's diff view keeps its own
   per-character measuring.

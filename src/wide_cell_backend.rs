@@ -13,6 +13,10 @@
 //! The wrapper drops a blank update that falls inside a wide symbol drawn just
 //! before it (the terminal already covered that cell), and gives any other
 //! content there a run of its own, so the inner backend positions the cursor.
+//! tmux widens such an emoji only when the selector arrives, over whatever is
+//! in the next cell: if that is an older copy of the emoji (a row shifted by
+//! one column), the next write clears both. So before each one the wrapper
+//! blanks the cells it will widen into.
 
 use std::io;
 
@@ -20,7 +24,12 @@ use ratatui::backend::{Backend, ClearType, WindowSize};
 use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
 
-use crate::util::display_width;
+use unicode_width::UnicodeWidthStr;
+
+/// Cell width of a cell symbol, as ratatui's diff measures it.
+fn symbol_width(symbol: &str) -> usize {
+    symbol.width()
+}
 
 pub struct WideCellBackend<B> {
     inner: B,
@@ -50,7 +59,7 @@ fn runs<'a>(content: impl Iterator<Item = Update<'a>>) -> Vec<Vec<Update<'a>>> {
             Some(run) if !inside_wide => run.push((x, y, cell)),
             _ => runs.push(vec![(x, y, cell)]),
         }
-        let width = display_width(cell.symbol()) as u16;
+        let width = symbol_width(cell.symbol()) as u16;
         covered = (width > 1).then(|| (y, x.saturating_add(1), x.saturating_add(width)));
     }
     runs
@@ -60,7 +69,7 @@ fn runs<'a>(content: impl Iterator<Item = Update<'a>>) -> Vec<Vec<Update<'a>>> {
 /// the cell after it only when the selector arrives.
 fn widened_by_selector(cell: &Cell) -> bool {
     let symbol = cell.symbol();
-    symbol.contains('\u{fe0f}') && display_width(symbol) > 1
+    symbol.contains('\u{fe0f}') && symbol_width(symbol) > 1
 }
 
 /// Before each widened symbol, blank the cells it will take. Whatever wide
@@ -68,16 +77,23 @@ fn widened_by_selector(cell: &Cell) -> bool {
 /// is then gone before the selector widens the new one over it; otherwise tmux
 /// clears both when the next write lands on the old one. `blanks` holds one
 /// blank per widened symbol, in order, carrying its style.
-fn with_cleared_tails<'a>(updates: &[Update<'a>], blanks: &'a [Cell]) -> Vec<Update<'a>> {
+/// Tail cells at or past `width` are left out: there is nothing to clear.
+fn with_cleared_tails<'a>(
+    updates: &[Update<'a>],
+    blanks: &'a [Cell],
+    width: u16,
+) -> Vec<Update<'a>> {
     let mut out = Vec::with_capacity(updates.len() + blanks.len());
     let mut blanks = blanks.iter();
     for &(x, y, cell) in updates {
         if widened_by_selector(cell)
             && let Some(blank) = blanks.next()
         {
-            let width = display_width(cell.symbol()) as u16;
-            for tail in 1..width {
-                out.push((x.saturating_add(tail), y, blank));
+            for tail in 1..symbol_width(cell.symbol()) as u16 {
+                let column = x.saturating_add(tail);
+                if column < width {
+                    out.push((column, y, blank));
+                }
             }
         }
         out.push((x, y, cell));
@@ -102,7 +118,8 @@ impl<B: Backend<Error = io::Error>> Backend for WideCellBackend<B> {
                 blank
             })
             .collect();
-        for run in runs(with_cleared_tails(&updates, &blanks).into_iter()) {
+        let width = self.inner.size()?.width;
+        for run in runs(with_cleared_tails(&updates, &blanks, width).into_iter()) {
             self.inner.draw(run.into_iter())?;
         }
         Ok(())
@@ -152,6 +169,7 @@ impl<B: Backend<Error = io::Error>> Backend for WideCellBackend<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::display_width;
     use ratatui::backend::CrosstermBackend;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
@@ -186,6 +204,38 @@ mod tests {
         let (warning, letter) = (cell("\u{26a0}\u{fe0f}"), cell("z"));
         let updates = vec![(3, 1, &warning), (4, 1, &letter)];
         assert_eq!(runs(updates.into_iter()).len(), 2);
+    }
+
+    #[test]
+    fn the_cell_an_emoji_widens_into_is_blanked_first_with_its_style() {
+        let style = ratatui::style::Style::default().bg(ratatui::style::Color::Blue);
+        let mut warning = cell("\u{26a0}\u{fe0f}");
+        warning.set_style(style);
+        let (wide_cjk, letter) = (cell("\u{4e2d}"), cell("a"));
+        let mut blank = warning.clone();
+        blank.set_symbol(" ");
+        let blanks = vec![blank.clone(), blank];
+        let updates = vec![
+            (3, 0, &warning),
+            (6, 0, &wide_cjk),
+            (8, 0, &letter),
+            (9, 0, &warning),
+        ];
+        let out = with_cleared_tails(&updates, &blanks, 10);
+        let order: Vec<(u16, &str)> = out.iter().map(|(x, _, cell)| (*x, cell.symbol())).collect();
+        // The tail blank comes before its emoji; CJK without a selector and
+        // narrow cells get none; an emoji in the last column has no tail to blank.
+        assert_eq!(
+            order,
+            vec![
+                (4, " "),
+                (3, "\u{26a0}\u{fe0f}"),
+                (6, "\u{4e2d}"),
+                (8, "a"),
+                (9, "\u{26a0}\u{fe0f}")
+            ]
+        );
+        assert_eq!(out[0].2.bg, ratatui::style::Color::Blue);
     }
 
     #[test]
