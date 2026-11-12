@@ -32,6 +32,7 @@ mod test_support;
 mod tips;
 mod tmux_style;
 mod ui;
+mod knowledge_graph;
 mod util;
 mod wide_cell_backend;
 mod workflow;
