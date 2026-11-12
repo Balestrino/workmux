@@ -50,6 +50,8 @@ pub enum TokenId {
     Group,
     GroupCount,
     GroupStatus,
+    /// Fork: the agent's knowledge-graph state.
+    KnowledgeGraph,
 }
 
 impl TokenId {
@@ -98,6 +100,7 @@ impl fmt::Display for TokenId {
             TokenId::GitBranch => "git_branch",
             TokenId::PrNumber => "pr_number",
             TokenId::PrChecks => "pr_checks",
+            TokenId::KnowledgeGraph => "knowledge_graph",
             TokenId::StatusLabel => "status_label",
             TokenId::Idx => "idx",
             TokenId::JumpKey => "jump_key",
@@ -248,6 +251,7 @@ pub fn parse_line(input: &str) -> Result<Vec<Token>, ParseError> {
                     "git_branch" => TokenId::GitBranch,
                     "pr_number" => TokenId::PrNumber,
                     "pr_checks" => TokenId::PrChecks,
+                    "knowledge_graph" => TokenId::KnowledgeGraph,
                     "status_label" => TokenId::StatusLabel,
                     "idx" => TokenId::Idx,
                     "jump_key" => TokenId::JumpKey,
@@ -472,6 +476,7 @@ mod tests {
             TokenId::StatusLabel,
             TokenId::Idx,
             TokenId::JumpKey,
+            TokenId::KnowledgeGraph,
         ] {
             let name = token_id.to_string();
             let parsed = parse_line(&format!("{{{}}}", name)).unwrap();

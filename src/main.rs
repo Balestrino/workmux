@@ -13,6 +13,7 @@ mod frozen_config;
 mod git;
 mod github;
 mod gitlab;
+mod knowledge_graph;
 mod llm;
 mod logger;
 mod markdown;

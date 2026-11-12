@@ -2504,6 +2504,63 @@ mod tests {
     }
 
     #[test]
+    fn knowledge_graph_line_fits_a_narrow_sidebar() {
+        use crate::command::sidebar::template::parser::parse_line;
+        use crate::knowledge_graph::KnowledgeGraphState as S;
+
+        for (state, text) in [
+            (S::None, "No knowledge graph"),
+            (S::Available, "\u{25cb} codegraph"),
+            (S::Attention, "\u{26a0} codegraph"),
+            (S::Active, "\u{25cf} codegraph"),
+        ] {
+            let mut app = tile_fixture();
+            app.agents.truncate(1);
+            app.templates.compact = parse_line("{knowledge_graph}").unwrap();
+            app.knowledge_graph
+                .insert(app.agents[0].pane_id.clone(), state);
+            app.rebuild_rows();
+            let mut terminal = Terminal::new(TestBackend::new(25, 3)).unwrap();
+            terminal.draw(|f| render_sidebar(f, &mut app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let row = (0..3)
+                .map(|y| drawn_row(buffer, y))
+                .find(|row| row.contains(text))
+                .unwrap_or_else(|| panic!("no row shows {text:?}"));
+            assert!(crate::util::display_width(&row) <= 25, "{row:?}");
+        }
+    }
+
+    #[test]
+    fn knowledge_graph_line_fits_a_narrow_tile_sidebar() {
+        use crate::knowledge_graph::KnowledgeGraphState as S;
+        let mut app = tile_fixture();
+        app.agents.truncate(2);
+        app.layout_mode = SidebarLayoutMode::Tiles;
+        app.templates.tiles = crate::command::sidebar::app::DEFAULT_TILE_TEMPLATES
+            .iter()
+            .map(|line| super::super::template::parser::parse_line(line).unwrap())
+            .collect();
+        app.knowledge_graph
+            .insert(app.agents[0].pane_id.clone(), S::None);
+        app.knowledge_graph
+            .insert(app.agents[1].pane_id.clone(), S::Attention);
+        app.rebuild_rows();
+        app.list_state.select(app.row_of_agent(0));
+        let mut terminal = Terminal::new(TestBackend::new(25, 12)).unwrap();
+        terminal.draw(|f| render_sidebar(f, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        for text in ["No knowledge graph", "\u{26a0} codegraph"] {
+            let y = (0..12)
+                .find(|y| drawn_row(buffer, *y).contains(text))
+                .unwrap_or_else(|| panic!("no tile line shows {text:?}"));
+            let row = drawn_row(buffer, y);
+            assert!(row.starts_with('\u{258c}'), "stripe first: {row:?}");
+            assert!(crate::util::display_width(&row) <= 25, "{row:?}");
+        }
+    }
+
+    #[test]
     fn render_sidebar_shows_exit_confirmation() {
         let backend = TestBackend::new(34, 5);
         let mut terminal = Terminal::new(backend).unwrap();

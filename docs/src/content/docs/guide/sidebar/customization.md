@@ -17,6 +17,7 @@ sidebar:
       - "{primary} {pane_suffix} {fill} {elapsed}"
       - "{secondary} {fill} {git_stats}"
       - "{pane_title} {fill} {pr_number} {pr_checks}"
+      - "{knowledge_graph}"
 
     # Horizontal mode: one string per visual line in each top bar chip.
     horizontal:
@@ -30,8 +31,9 @@ sidebar:
     grouped:
       header: "{group} {fill} {group_count}"
       tiles:
-        - "{primary} {pane_suffix} {fill} {pr_number} {pr_checks} {elapsed}"
-        - "{pane_title} {fill} {git_stats}"
+        - "{primary} {pane_suffix} {fill} {pr_number} {elapsed}"
+        - "{pane_title} {fill} {pr_checks} {git_stats}"
+        - "{knowledge_graph}"
 ```
 
 The values shown above are also the built-in defaults, so leaving these keys
@@ -66,6 +68,7 @@ sidebars without a restart.
 | `{git_branch}`   | Current branch name. Empty when detached HEAD or git status unavailable.                                                                        |
 | `{pr_number}`    | Pull request number as `#123`. Empty when the current branch has no matching PR.                                                                |
 | `{pr_checks}`    | GitHub check status for the current remote branch, with counts when space allows. Empty when no checks are known.                               |
+| `{knowledge_graph}` | CodeGraph state of the agent's worktree, see [Knowledge graph](#knowledge-graph). Empty for remote agents and until the daemon's first check. |
 | `{git_ahead}`    | Commits ahead of upstream as `↑N` when N greater than 0. Empty when 0 or no upstream.                                                           |
 | `{git_behind}`   | Commits behind upstream as `↓N` when N greater than 0. Empty when 0 or no upstream.                                                             |
 | `{git_dirty}`    | Diff glyph when the working tree is dirty. Empty when clean.                                                                                    |
@@ -259,6 +262,26 @@ key. Setting `claude:` in a project replaces only the global `claude`
 entry; other agents defined in the global config are preserved. To
 clear an inherited override entirely for one agent, set its value to
 `null` (e.g. `claude: ~`).
+
+## Knowledge graph
+
+`{knowledge_graph}` (the last tile line by default) shows whether the agent
+can use a CodeGraph index:
+
+| Shown                  | Meaning |
+| ---------------------- | ------- |
+| `No knowledge graph`   | No CodeGraph server connected to the agent and no index for its directory. |
+| `○ codegraph` (dimmed) | The server is connected but the directory has no index, or there is an index and the connection cannot be observed (Zellij, container or Lima sandboxes). |
+| `⚠ codegraph`          | Needs action: an index without a connected server, or a stale index (reindex recommended, an interrupted indexing, or changes still pending after 2 minutes). |
+| `● codegraph` (green, blinking) | A fresh index and a connected server. |
+
+An index is the nearest `.codegraph/codegraph.db` at or above the agent's
+directory; "connected" means a `codegraph serve --mcp` process runs below the
+agent's pane. The daemon checks freshness with `codegraph status --json` at
+most once a minute per index, at the lowest CPU and I/O priority, and never
+creates, syncs or repairs an index. The check opens the database, so SQLite
+creates and removes its `-wal`/`-shm` side files; the index is not changed.
+To hide the line, set your own `tiles` without the token.
 
 ## Status icons
 

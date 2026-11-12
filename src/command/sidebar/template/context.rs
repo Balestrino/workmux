@@ -62,6 +62,8 @@ pub struct RowContext<'a> {
     pub idx: Option<usize>,
     /// Current spinner frame for animated PR checks.
     pub spinner_frame: u8,
+    /// Fork: knowledge-graph state; `None` renders the token empty.
+    pub knowledge_graph: Option<crate::knowledge_graph::KnowledgeGraphState>,
 }
 
 impl<'a> RowContext<'a> {
@@ -187,6 +189,10 @@ impl<'a> RowContext<'a> {
             agent_label,
             idx: jump_idx,
             spinner_frame: app.spinner_frame,
+            knowledge_graph: match &agent.remote {
+                Some(_) => None,
+                None => app.knowledge_graph.get(&agent.pane_id).copied(),
+            },
         }
     }
 
@@ -213,6 +219,16 @@ impl<'a> RowContext<'a> {
                 .map(|(t, _)| t.clone())
                 .collect(),
             TokenId::AgentIcon => self.agent_icon.clone(),
+            TokenId::KnowledgeGraph => {
+                use crate::knowledge_graph::KnowledgeGraphState as S;
+                match self.knowledge_graph {
+                    None => String::new(),
+                    Some(S::None) => "No knowledge graph".to_string(),
+                    Some(S::Available) => "\u{25cb} codegraph".to_string(),
+                    Some(S::Attention) => "\u{26a0} codegraph".to_string(),
+                    Some(S::Active) => "\u{25cf} codegraph".to_string(),
+                }
+            }
             TokenId::PaneSuffix => self.pane_suffix.clone(),
             TokenId::Elapsed => self.elapsed.clone(),
             TokenId::GitStats
@@ -390,6 +406,18 @@ impl<'a> RowContext<'a> {
             TokenId::WindowIndex => Style::default().fg(self.palette.dimmed),
             TokenId::AgentIcon => {
                 let fg = self.agent_icon_color.unwrap_or(self.palette.text);
+                Style::default().fg(fg)
+            }
+            TokenId::KnowledgeGraph => {
+                use crate::knowledge_graph::KnowledgeGraphState as S;
+                let fg = match self.knowledge_graph {
+                    Some(S::Attention) => self.palette.warning,
+                    // Blink: 500 ms on, 500 ms off on the 250 ms redraw tick.
+                    Some(S::Active) if (self.spinner_frame / 2).is_multiple_of(2) => {
+                        self.palette.success
+                    }
+                    _ => self.palette.dimmed,
+                };
                 Style::default().fg(fg)
             }
             _ => Style::default().fg(self.palette.text),
@@ -837,6 +865,67 @@ mod tests {
             agent_label: String::new(),
             idx: Some(idx),
             spinner_frame: 0,
+            knowledge_graph: None,
+        }
+    }
+
+    #[test]
+    fn knowledge_graph_blink_is_regular_across_the_tick_wrap() {
+        use crate::knowledge_graph::KnowledgeGraphState as S;
+        let agent = test_agent();
+        let mut ctx = make_context(&agent, None, 0);
+        ctx.knowledge_graph = Some(S::Active);
+        let palette = test_palette();
+        let mut frame = 0u8;
+        let mut colors = Vec::new();
+        for _ in 0..48 {
+            ctx.spinner_frame = frame;
+            colors.push(ctx.intrinsic_style(TokenId::KnowledgeGraph).fg);
+            frame = crate::command::sidebar::app::next_spinner_frame(frame);
+        }
+        for (tick, color) in colors.iter().enumerate() {
+            let on = (tick / 2) % 2 == 0;
+            let expected = if on { palette.success } else { palette.dimmed };
+            assert_eq!(*color, Some(expected), "tick {tick}");
+        }
+    }
+
+    #[test]
+    fn knowledge_graph_token_text() {
+        use crate::knowledge_graph::KnowledgeGraphState as S;
+        let agent = test_agent();
+        let mut ctx = make_context(&agent, None, 0);
+        assert_eq!(ctx.resolve(TokenId::KnowledgeGraph), "");
+        assert_eq!(ctx.natural_width(TokenId::KnowledgeGraph), 0);
+        for (state, text) in [
+            (S::None, "No knowledge graph"),
+            (S::Available, "\u{25cb} codegraph"),
+            (S::Attention, "\u{26a0} codegraph"),
+            (S::Active, "\u{25cf} codegraph"),
+        ] {
+            ctx.knowledge_graph = Some(state);
+            assert_eq!(ctx.resolve(TokenId::KnowledgeGraph), text);
+        }
+        let palette = test_palette();
+        ctx.knowledge_graph = Some(S::Attention);
+        assert_eq!(
+            ctx.intrinsic_style(TokenId::KnowledgeGraph).fg,
+            Some(palette.warning)
+        );
+        ctx.knowledge_graph = Some(S::Active);
+        for (frame, color) in [
+            (0, palette.success),
+            (1, palette.success),
+            (2, palette.dimmed),
+            (3, palette.dimmed),
+            (4, palette.success),
+        ] {
+            ctx.spinner_frame = frame;
+            assert_eq!(
+                ctx.intrinsic_style(TokenId::KnowledgeGraph).fg,
+                Some(color),
+                "frame {frame}"
+            );
         }
     }
 
