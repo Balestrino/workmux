@@ -83,7 +83,7 @@ pub fn run_sidebar() -> Result<()> {
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let _guard = TerminalGuard;
-    let backend = CrosstermBackend::new(stdout);
+    let backend = crate::wide_cell_backend::WideCellBackend::new(CrosstermBackend::new(stdout));
     let mut terminal = ratatui::Terminal::new(backend)?;
 
     // Channel for all events

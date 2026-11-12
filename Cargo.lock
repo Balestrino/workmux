@@ -3417,6 +3417,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "unicode-segmentation",
  "unicode-width 0.2.2",
  "which 8.0.2",
 ]

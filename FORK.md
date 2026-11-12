@@ -116,6 +116,28 @@ upstream behaviour in these points:
   it `workmux send --wait` reported `send_stalled`), a late `Stop` keeps the
   expiry time, and a late tool call of an expired subagent leaves the agent
   done.
+- **Emoji with the variation selector U+FE0F draw in place** in the sidebar
+  and the dashboard. The sidebar's fallback dirty icon is one (`⚠️`, used
+  without Nerd Font), and the row with the git counts came out corrupted and
+  stayed so until a full redraw, such as a click. There were two causes:
+  - text width was summed per character, so `⚠️` counted one cell where it
+    draws two, and the row came out one cell wider than the pane; its last
+    character wrapped onto the next row. `display_width` and
+    `truncate_with_ellipsis` (`src/util.rs`) and the sidebar's
+    `truncate_to_width` now measure per grapheme, as ratatui and tmux do.
+  - on a redraw, ratatui 0.30 re-sends the blank trailing cell of such an
+    emoji, and its crossterm backend writes it without moving the cursor, as
+    if the emoji were one cell wide. In tmux the blank and the rest of the run
+    landed one column to the right (`⚠️  +44`, `-28-  2`), and an emoji
+    moving one column over its old copy was erased. `src/wide_cell_backend.rs`
+    wraps the backend: it drops a blank inside a wide symbol just drawn, and
+    blanks the cell an emoji will widen into before drawing it.
+
+  Measured on an isolated tmux server (tmux 3.5a): 600 random rows redrawn
+  through ratatui's backend came out wrong 452 times, 0 through the wrapper;
+  the real 25-column sidebar now matches a fresh redraw at every step. Fixed
+  2026-11-12; revertible on its own. The dashboard's diff view keeps its own
+  per-character measuring.
 
 Upstream changes worth knowing when using the fork:
 

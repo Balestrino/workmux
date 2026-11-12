@@ -164,7 +164,7 @@ pub fn run(
     // Setup terminal
     let mut terminal_session = TerminalSession::start()?;
     let stdout = io::stdout();
-    let backend = CrosstermBackend::new(stdout);
+    let backend = crate::wide_cell_backend::WideCellBackend::new(CrosstermBackend::new(stdout));
     let mut terminal = ratatui::Terminal::new(backend)?;
 
     // Unified event channel: all background threads and the input thread send here

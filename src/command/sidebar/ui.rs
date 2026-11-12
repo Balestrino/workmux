@@ -7,7 +7,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, Padding, Paragraph, Wrap};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
-use unicode_width::UnicodeWidthChar;
 
 use crate::git::GitStatus;
 use crate::multiplexer::{AgentPane, AgentStatus};
@@ -948,15 +947,17 @@ fn status_icon_overhang(status: Option<AgentStatus>, background: bool, is_stale:
 }
 
 fn truncate_to_width(s: &str, max_width: usize) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
     let mut out = String::new();
     let mut width = 0;
-    for ch in s.chars() {
-        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(1);
-        if width + ch_width > max_width {
+    // Whole graphemes, measured as ratatui and tmux draw them (⚠️ is two cells).
+    for grapheme in s.graphemes(true) {
+        let grapheme_width = crate::util::grapheme_width(grapheme);
+        if width + grapheme_width > max_width {
             break;
         }
-        out.push(ch);
-        width += ch_width;
+        out.push_str(grapheme);
+        width += grapheme_width;
     }
     out
 }
@@ -2455,6 +2456,51 @@ mod tests {
             elapsed.as_nanos(),
             elapsed.as_nanos() / SAMPLES as u128
         );
+    }
+
+    /// Cells a terminal advances for a rendered row: a wide symbol covers the
+    /// next cell, which ratatui leaves as a blank placeholder.
+    fn drawn_row(buffer: &ratatui::buffer::Buffer, y: u16) -> String {
+        let mut row = String::new();
+        let mut x = 0;
+        while x < buffer.area.width {
+            let symbol = buffer[(x, y)].symbol();
+            row.push_str(symbol);
+            x += crate::util::display_width(symbol).max(1) as u16;
+        }
+        row
+    }
+
+    #[test]
+    fn a_dirty_worktree_row_fits_a_narrow_sidebar_with_the_warning_emoji() {
+        use crate::command::sidebar::template::parser::parse_line;
+
+        let mut app = tile_fixture();
+        app.agents.truncate(1);
+        app.agents[0].path = std::path::PathBuf::from("/example/infra-scaleway-prerequisites");
+        app.templates.compact = parse_line("{secondary} {fill} {git_stats}").unwrap();
+        app.rebuild_rows();
+        app.git_statuses.insert(
+            app.agents[0].path.clone(),
+            GitStatus {
+                lines_added: 28,
+                lines_removed: 22,
+                uncommitted_added: 28,
+                uncommitted_removed: 22,
+                is_dirty: true,
+                ..Default::default()
+            },
+        );
+        let mut terminal = Terminal::new(TestBackend::new(25, 3)).unwrap();
+        terminal.draw(|f| render_sidebar(f, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = (0..3)
+            .map(|y| drawn_row(buffer, y))
+            .find(|row| row.contains('\u{26a0}'))
+            .expect("a row with the warning emoji");
+        // The whole count is drawn, and the row is no wider than the pane.
+        assert!(row.trim_end().ends_with("+28 -22"), "{row:?}");
+        assert!(crate::util::display_width(&row) <= 25, "{row:?}");
     }
 
     #[test]
