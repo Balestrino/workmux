@@ -263,7 +263,8 @@ clear an inherited override entirely for one agent, set its value to
 ## Status icons
 
 The `{status_icon}` token renders the working spinner, background
-indicator, waiting indicator, done check, and sleeping indicator. Defaults
+indicator, waiting indicator, done check, and stale indicator (a stale or
+sleeping agent). Defaults
 depend on whether you have [nerdfont](/guide/configuration/) enabled:
 
 | State      | Default (no nerdfont) | Default (nerdfont) |
@@ -272,7 +273,7 @@ depend on whether you have [nerdfont](/guide/configuration/) enabled:
 | Background | ⏳                    | nf-md-timer_sand   |
 | Waiting    | 💬                    | nf-fa-comment      |
 | Done       | ✅                    | nf-md-check_circle |
-| Sleeping   | 💤                    | nf-md-sleep        |
+| Stale      | 💤                    | nf-md-sleep        |
 
 Override per state under top-level `status_icons`. Any value set here
 wins over both the emoji and nerdfont defaults, so you can mix and match.
@@ -284,6 +285,7 @@ status_icons:
   waiting: "💬"
   done: "✅"
   background: "⏳"
+  stale: "💤"
 ```
 
 ## Examples

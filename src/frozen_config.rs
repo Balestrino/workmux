@@ -211,6 +211,7 @@ mod tests {
                 waiting: Some("wait".to_string()),
                 done: Some("done".to_string()),
                 background: None,
+                stale: None,
             },
             ..Default::default()
         }

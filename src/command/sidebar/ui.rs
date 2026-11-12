@@ -1724,12 +1724,12 @@ pub(crate) fn status_icon_and_style(
 
     if is_stale {
         let style = Style::default().fg(app.palette.dimmed);
-        let icon = if use_nf {
-            "\u{f04b2}" // 󰒲 nf-md-sleep
+        let spans = if use_nf && app.status_icons.stale.is_none() {
+            vec![("\u{f04b2}".to_string(), style)] // 󰒲 nf-md-sleep
         } else {
-            "💤"
+            tmux_style::parse_tmux_styles(app.status_icons.stale(), style)
         };
-        return (vec![(icon.to_string(), style)], style);
+        return (spans, style);
     }
     match status {
         Some(AgentStatus::Working) if background => {
@@ -2569,6 +2569,25 @@ mod tests {
         let (spans, _) = status_icon_and_style(&app, Some(AgentStatus::Working), true, false);
         let text: String = spans.iter().map(|(t, _)| t.as_str()).collect();
         assert_eq!(text, "bg");
+    }
+
+    #[test]
+    fn stale_agent_shows_the_configured_stale_icon() {
+        let mut app = SidebarApp::test_with_template_error(TemplateError {
+            location: String::new(),
+            message: String::new(),
+        });
+        let (spans, style) = status_icon_and_style(&app, None, false, true);
+        assert_eq!(spans, vec![("\u{1f4a4}".to_string(), style)]);
+        assert_eq!(style.fg, Some(app.palette.dimmed));
+
+        // A stale agent keeps its last status; the stale icon still wins.
+        app.status_icons.stale = Some("\u{23f8}".to_string());
+        for status in [None, Some(AgentStatus::Done), Some(AgentStatus::Working)] {
+            let (spans, style) = status_icon_and_style(&app, status, false, true);
+            assert_eq!(spans, vec![("\u{23f8}".to_string(), style)]);
+            assert_eq!(style.fg, Some(app.palette.dimmed));
+        }
     }
 
     #[test]
