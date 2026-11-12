@@ -129,6 +129,88 @@ impl Freshness {
     }
 }
 
+/// Whether a command line runs the CodeGraph MCP server: an argument naming
+/// `codegraph` or `codegraph.js` (it runs under a bundled `node`), followed
+/// by `serve` and `--mcp`.
+pub fn is_codegraph_server(args: &[String]) -> bool {
+    let Some(program) = args.iter().position(|arg| {
+        let name = arg.rsplit('/').next().unwrap_or(arg);
+        name == "codegraph" || name == "codegraph.js"
+    }) else {
+        return false;
+    };
+    let rest = &args[program + 1..];
+    rest.iter().any(|arg| arg == "serve") && rest.iter().any(|arg| arg == "--mcp")
+}
+
+/// Parent links and command lines of the processes under a `/proc` root,
+/// read once per worker pass.
+#[derive(Debug, Default)]
+pub struct ProcTable {
+    children: std::collections::HashMap<u32, Vec<u32>>,
+    cmdlines: std::collections::HashMap<u32, Vec<String>>,
+}
+
+impl ProcTable {
+    /// Read `<proc_root>/<pid>/{stat,cmdline}`; `None` if the root cannot be
+    /// listed. Processes that vanish while reading are skipped.
+    pub fn read(proc_root: &Path) -> Option<ProcTable> {
+        let mut table = ProcTable::default();
+        for entry in std::fs::read_dir(proc_root).ok()?.flatten() {
+            let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+                continue;
+            };
+            let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+                continue;
+            };
+            // The command name may hold spaces and parentheses: the ppid is
+            // the second field after the last ')'.
+            let Some(ppid) = stat
+                .rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().nth(1))
+                .and_then(|s| s.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            table.children.entry(ppid).or_default().push(pid);
+            if let Ok(raw) = std::fs::read(entry.path().join("cmdline")) {
+                let args = raw
+                    .split(|b| *b == 0)
+                    .filter(|part| !part.is_empty())
+                    .map(|part| String::from_utf8_lossy(part).into_owned())
+                    .collect();
+                table.cmdlines.insert(pid, args);
+            }
+        }
+        Some(table)
+    }
+
+    /// Whether a CodeGraph server runs among the descendants of `pane_pid`.
+    pub fn connection(&self, pane_pid: Option<u32>) -> Connection {
+        let Some(root) = pane_pid else {
+            return Connection::Unknown;
+        };
+        let mut seen = std::collections::HashSet::from([root]);
+        let mut queue = std::collections::VecDeque::from([root]);
+        while let Some(pid) = queue.pop_front() {
+            for &child in self.children.get(&pid).into_iter().flatten() {
+                if !seen.insert(child) {
+                    continue;
+                }
+                if self
+                    .cmdlines
+                    .get(&child)
+                    .is_some_and(|args| is_codegraph_server(args))
+                {
+                    return Connection::Yes;
+                }
+                queue.push_back(child);
+            }
+        }
+        Connection::No
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,6 +310,70 @@ mod tests {
         let mut f = Freshness::default();
         f.record(Some(&report(0, false, None)), now);
         assert!(!f.is_stale());
+    }
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn codegraph_server_args_match() {
+        assert!(is_codegraph_server(&args(&[
+            "/opt/x/node",
+            "--liftoff-only",
+            "/opt/x/lib/dist/bin/codegraph.js",
+            "serve",
+            "--mcp",
+        ])));
+        assert!(is_codegraph_server(&args(&[
+            "/usr/local/bin/codegraph",
+            "serve",
+            "--mcp"
+        ])));
+        assert!(!is_codegraph_server(&args(&[
+            "node",
+            "-e",
+            "const x = '/opt/x/codegraph.js';",
+            "serve",
+            "--mcp",
+        ])));
+        assert!(!is_codegraph_server(&args(&["codegraph", "status"])));
+        assert!(!is_codegraph_server(&args(&["grep", "codegraph serve --mcp"])));
+    }
+
+    fn fake_proc(root: &Path, pid: u32, ppid: u32, argv: &[&str]) {
+        let dir = root.join(pid.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let comm = argv[0].rsplit('/').next().unwrap();
+        std::fs::write(
+            dir.join("stat"),
+            format!("{pid} ({comm}) S {ppid} {pid} {pid} 0 -1 4194560"),
+        )
+        .unwrap();
+        let mut cmdline = argv.join("\0");
+        cmdline.push('\0');
+        std::fs::write(dir.join("cmdline"), cmdline).unwrap();
+    }
+
+    #[test]
+    fn connection_finds_a_grandchild_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fake_proc(root, 10, 1, &["/bin/bash"]);
+        fake_proc(root, 11, 10, &["claude", "--continue"]);
+        fake_proc(root, 12, 11, &["/usr/bin/codegraph", "serve", "--mcp"]);
+        fake_proc(root, 20, 1, &["/bin/bash"]);
+        fake_proc(root, 21, 20, &["claude"]);
+        std::fs::create_dir_all(root.join("self")).unwrap();
+        let table = ProcTable::read(root).expect("fake proc is readable");
+        assert_eq!(table.connection(Some(10)), Connection::Yes);
+        assert_eq!(table.connection(Some(20)), Connection::No);
+        assert_eq!(table.connection(None), Connection::Unknown);
+    }
+
+    #[test]
+    fn unreadable_proc_is_unknown() {
+        assert!(ProcTable::read(Path::new("/nonexistent")).is_none());
     }
 
     #[test]
