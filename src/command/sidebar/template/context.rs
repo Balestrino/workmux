@@ -413,7 +413,9 @@ impl<'a> RowContext<'a> {
                 let fg = match self.knowledge_graph {
                     Some(S::Attention) => self.palette.warning,
                     // Blink: 500 ms on, 500 ms off on the 250 ms redraw tick.
-                    Some(S::Active) if (self.spinner_frame / 2) % 2 == 0 => self.palette.success,
+                    Some(S::Active) if (self.spinner_frame / 2).is_multiple_of(2) => {
+                        self.palette.success
+                    }
                     _ => self.palette.dimmed,
                 };
                 Style::default().fg(fg)
@@ -885,7 +887,10 @@ mod tests {
         }
         let palette = test_palette();
         ctx.knowledge_graph = Some(S::Attention);
-        assert_eq!(ctx.intrinsic_style(TokenId::KnowledgeGraph).fg, Some(palette.warning));
+        assert_eq!(
+            ctx.intrinsic_style(TokenId::KnowledgeGraph).fg,
+            Some(palette.warning)
+        );
         ctx.knowledge_graph = Some(S::Active);
         for (frame, color) in [
             (0, palette.success),

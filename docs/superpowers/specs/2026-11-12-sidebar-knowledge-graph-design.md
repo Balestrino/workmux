@@ -1,6 +1,6 @@
 # Sidebar knowledge-graph line — design
 
-Date: 2026-11-12. Status: proposed (fork feature).
+Date: 2026-11-12. Status: accepted 2026-11-12 (fork feature).
 
 ## Intent
 

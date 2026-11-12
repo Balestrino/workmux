@@ -61,6 +61,16 @@ Changes are not proposed upstream.
   becomes done when the last item finishes (which also fixes Codex staying
   `working` after its last `SubagentStop`); every item expires. The stored
   status stays `working`; `workmux status --json` adds `background: true`.
+- **Knowledge-graph line** (`{knowledge_graph}`, last line of the default
+  tiles): `No knowledge graph`, `○ codegraph`, `⚠ codegraph` or a blinking
+  green `● codegraph`, from the nearest `.codegraph/codegraph.db`, a
+  `codegraph serve --mcp` process below the agent's pane (`/proc`), and
+  `codegraph status --json` run by the daemon at most once a minute per
+  index at the lowest priority (it opens the database, so SQLite creates and
+  removes `-wal`/`-shm`; accepted 2026-11-12, the index is never changed).
+  Spec and plan: `docs/superpowers/{specs,plans}/2026-11-12-sidebar-knowledge-graph*`.
+  **Planned:** Graphify, Serena and similar tools as adapters (index marker,
+  server signature, freshness probe) chosen by configuration.
 - **Configurable stale icon** (`status_icons.stale`, default 💤): the icon the
   sidebar draws for a stale or sleeping agent. Upstream hard-codes 💤
   (nf-md-sleep with nerdfonts); a value set here wins over both, like the

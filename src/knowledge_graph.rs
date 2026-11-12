@@ -113,7 +113,10 @@ impl Freshness {
             return;
         };
         let broken = report.reindex_recommended
-            || report.state.as_deref().is_some_and(|state| state != "complete");
+            || report
+                .state
+                .as_deref()
+                .is_some_and(|state| state != "complete");
         let lagging = if report.pending > 0 {
             let since = *self.pending_since.get_or_insert(now);
             now.saturating_duration_since(since) >= PENDING_GRACE
@@ -157,7 +160,11 @@ impl ProcTable {
     pub fn read(proc_root: &Path) -> Option<ProcTable> {
         let mut table = ProcTable::default();
         for entry in std::fs::read_dir(proc_root).ok()?.flatten() {
-            let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|s| s.parse::<u32>().ok())
+            else {
                 continue;
             };
             let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
@@ -458,7 +465,10 @@ mod tests {
             "--mcp",
         ])));
         assert!(!is_codegraph_server(&args(&["codegraph", "status"])));
-        assert!(!is_codegraph_server(&args(&["grep", "codegraph serve --mcp"])));
+        assert!(!is_codegraph_server(&args(&[
+            "grep",
+            "codegraph serve --mcp"
+        ])));
     }
 
     fn fake_proc(root: &Path, pid: u32, ppid: u32, argv: &[&str]) {
@@ -552,7 +562,12 @@ mod tests {
         let plain = tempfile::tempdir().unwrap();
         let procs = tempfile::tempdir().unwrap();
         fake_proc(procs.path(), 10, 1, &["/bin/bash"]);
-        fake_proc(procs.path(), 11, 10, &["/usr/bin/codegraph", "serve", "--mcp"]);
+        fake_proc(
+            procs.path(),
+            11,
+            10,
+            &["/usr/bin/codegraph", "serve", "--mcp"],
+        );
         fake_proc(procs.path(), 20, 1, &["/bin/bash"]);
         let table = ProcTable::read(procs.path()).unwrap();
         let agents = [
@@ -572,7 +587,12 @@ mod tests {
         let index = indexed_dir();
         let procs = tempfile::tempdir().unwrap();
         fake_proc(procs.path(), 10, 1, &["/bin/bash"]);
-        fake_proc(procs.path(), 11, 10, &["/usr/bin/codegraph", "serve", "--mcp"]);
+        fake_proc(
+            procs.path(),
+            11,
+            10,
+            &["/usr/bin/codegraph", "serve", "--mcp"],
+        );
         fake_proc(procs.path(), 20, 1, &["/bin/bash"]);
         let table = ProcTable::read(procs.path()).unwrap();
         let agents = [

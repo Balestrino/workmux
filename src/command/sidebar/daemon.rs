@@ -1399,8 +1399,7 @@ fn next_audit_path(
 /// Watches Git metadata and, where efficient, worktree roots. Events are debounced
 /// per worktree before status refresh. Polling covers platforms or roots without
 /// complete worktree watches, and a rolling audit detects silent event loss.
-type KnowledgeGraphCache =
-    Arc<Mutex<HashMap<String, crate::knowledge_graph::KnowledgeGraphState>>>;
+type KnowledgeGraphCache = Arc<Mutex<HashMap<String, crate::knowledge_graph::KnowledgeGraphState>>>;
 
 /// How often the knowledge-graph worker rescans processes and checks whether
 /// an index root is due for a probe (probes themselves are rarer).
