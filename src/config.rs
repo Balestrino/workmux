@@ -3965,7 +3965,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 #   waiting: "💬"
 #   done: "✅"
 #   background: "⏳"
-#   stale: "💤"  # sidebar only
+#   stale: "💤"  # sidebar icon for stale agents
 
 #-------------------------------------------------------------------------------
 # Agent & AI

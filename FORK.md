@@ -64,7 +64,8 @@ Changes are not proposed upstream.
 - **Configurable stale icon** (`status_icons.stale`, default 💤): the icon the
   sidebar draws for a stale or sleeping agent. Upstream hard-codes 💤
   (nf-md-sleep with nerdfonts); a value set here wins over both, like the
-  other `status_icons`. Only the sidebar shows staleness.
+  other `status_icons`. The dashboard keeps its own stale mark (the agent's
+  status icon dimmed, followed by a fixed nerdfont glyph, U+F051B).
 - **Unified worktree view** (`dashboard.agents_tab`, default `false`): the
   dashboard is one worktree view; each worktree row is followed by sub-rows
   (`└`, status icon, elapsed time, title) for the agents working in it, using
