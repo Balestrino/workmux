@@ -211,6 +211,126 @@ impl ProcTable {
     }
 }
 
+/// One agent as the knowledge-graph worker sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KgAgent {
+    pub pane_id: String,
+    pub path: PathBuf,
+    pub pane_pid: Option<u32>,
+}
+
+/// Source of index freshness reports.
+pub trait Prober {
+    fn probe(&mut self, root: &Path) -> Option<ProbeReport>;
+}
+
+/// Minimum time between two probes of the same index root.
+pub const PROBE_INTERVAL: Duration = Duration::from_secs(60);
+/// A probe that has not finished by then is killed and counts as failed.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Runs `codegraph status --json <root>` at the lowest CPU and I/O priority.
+/// The only CodeGraph command the sidebar runs; it creates and removes
+/// SQLite's `-wal`/`-shm` files but never changes the index.
+#[derive(Debug, Default)]
+pub struct CodegraphProber {
+    has_ionice: Option<bool>,
+}
+
+impl Prober for CodegraphProber {
+    fn probe(&mut self, root: &Path) -> Option<ProbeReport> {
+        use std::process::{Command, Stdio};
+        let has_ionice = *self
+            .has_ionice
+            .get_or_insert_with(|| which::which("ionice").is_ok());
+        let mut command = Command::new("nice");
+        command.args(["-n", "19"]);
+        if has_ionice {
+            command.args(["ionice", "-c3"]);
+        }
+        command
+            .args(["codegraph", "status", "--json"])
+            .arg(root)
+            .current_dir(root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = command.spawn().ok()?;
+        let deadline = Instant::now() + PROBE_TIMEOUT;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => break,
+                Ok(Some(_)) | Err(_) => return None,
+                Ok(None) if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+        let mut output = String::new();
+        std::io::Read::read_to_string(&mut child.stdout.take()?, &mut output).ok()?;
+        parse_status_json(&output)
+    }
+}
+
+/// Per-root probe bookkeeping kept by the worker between passes.
+#[derive(Debug, Default)]
+pub struct KgWorkerState {
+    last_probe: std::collections::HashMap<PathBuf, Instant>,
+    freshness: std::collections::HashMap<PathBuf, Freshness>,
+}
+
+impl KgWorkerState {
+    /// The state of every agent. Each index root is probed at most once per
+    /// [`PROBE_INTERVAL`], however many agents share it; roots no agent uses
+    /// any more are forgotten.
+    pub fn pass(
+        &mut self,
+        agents: &[KgAgent],
+        procs: Option<&ProcTable>,
+        prober: &mut dyn Prober,
+        now: Instant,
+    ) -> std::collections::HashMap<String, KnowledgeGraphState> {
+        let roots: Vec<Option<PathBuf>> = agents.iter().map(|a| index_root(&a.path)).collect();
+        let in_use: std::collections::HashSet<&PathBuf> = roots.iter().flatten().collect();
+        self.last_probe.retain(|root, _| in_use.contains(root));
+        self.freshness.retain(|root, _| in_use.contains(root));
+        for root in &in_use {
+            let due = self
+                .last_probe
+                .get(*root)
+                .is_none_or(|last| now.saturating_duration_since(*last) >= PROBE_INTERVAL);
+            if due {
+                let report = prober.probe(root);
+                self.freshness
+                    .entry((*root).clone())
+                    .or_default()
+                    .record(report.as_ref(), now);
+                self.last_probe.insert((*root).clone(), now);
+            }
+        }
+        agents
+            .iter()
+            .zip(&roots)
+            .map(|(agent, root)| {
+                let connection = procs.map_or(Connection::Unknown, |table| {
+                    table.connection(agent.pane_pid)
+                });
+                let stale = root
+                    .as_ref()
+                    .and_then(|r| self.freshness.get(r))
+                    .is_some_and(Freshness::is_stale);
+                (
+                    agent.pane_id.clone(),
+                    decide(root.is_some(), connection, stale),
+                )
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,6 +494,96 @@ mod tests {
     #[test]
     fn unreadable_proc_is_unknown() {
         assert!(ProcTable::read(Path::new("/nonexistent")).is_none());
+    }
+
+    struct FakeProber {
+        calls: usize,
+        report: Option<ProbeReport>,
+    }
+
+    impl Prober for FakeProber {
+        fn probe(&mut self, _root: &Path) -> Option<ProbeReport> {
+            self.calls += 1;
+            self.report.clone()
+        }
+    }
+
+    fn fresh_prober() -> FakeProber {
+        FakeProber {
+            calls: 0,
+            report: Some(report(0, false, Some("complete"))),
+        }
+    }
+
+    fn indexed_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codegraph")).unwrap();
+        std::fs::write(dir.path().join(".codegraph/codegraph.db"), b"").unwrap();
+        dir
+    }
+
+    fn kg_agent(pane: &str, path: &Path, pid: Option<u32>) -> KgAgent {
+        KgAgent {
+            pane_id: pane.to_string(),
+            path: path.to_path_buf(),
+            pane_pid: pid,
+        }
+    }
+
+    #[test]
+    fn worker_probes_a_shared_root_once() {
+        let index = indexed_dir();
+        let agents = [
+            kg_agent("%1", index.path(), None),
+            kg_agent("%2", index.path(), None),
+        ];
+        let mut prober = fresh_prober();
+        let mut worker = KgWorkerState::default();
+        let t0 = Instant::now();
+        worker.pass(&agents, None, &mut prober, t0);
+        worker.pass(&agents, None, &mut prober, t0 + Duration::from_secs(10));
+        assert_eq!(prober.calls, 1);
+        worker.pass(&agents, None, &mut prober, t0 + Duration::from_secs(61));
+        assert_eq!(prober.calls, 2);
+    }
+
+    #[test]
+    fn worker_skips_agents_without_index() {
+        let plain = tempfile::tempdir().unwrap();
+        let procs = tempfile::tempdir().unwrap();
+        fake_proc(procs.path(), 10, 1, &["/bin/bash"]);
+        fake_proc(procs.path(), 11, 10, &["/usr/bin/codegraph", "serve", "--mcp"]);
+        fake_proc(procs.path(), 20, 1, &["/bin/bash"]);
+        let table = ProcTable::read(procs.path()).unwrap();
+        let agents = [
+            kg_agent("%1", plain.path(), Some(10)),
+            kg_agent("%2", plain.path(), Some(20)),
+        ];
+        let mut prober = fresh_prober();
+        let states =
+            KgWorkerState::default().pass(&agents, Some(&table), &mut prober, Instant::now());
+        assert_eq!(prober.calls, 0);
+        assert_eq!(states["%1"], KnowledgeGraphState::Available);
+        assert_eq!(states["%2"], KnowledgeGraphState::None);
+    }
+
+    #[test]
+    fn worker_reports_active_and_attention() {
+        let index = indexed_dir();
+        let procs = tempfile::tempdir().unwrap();
+        fake_proc(procs.path(), 10, 1, &["/bin/bash"]);
+        fake_proc(procs.path(), 11, 10, &["/usr/bin/codegraph", "serve", "--mcp"]);
+        fake_proc(procs.path(), 20, 1, &["/bin/bash"]);
+        let table = ProcTable::read(procs.path()).unwrap();
+        let agents = [
+            kg_agent("%A", index.path(), Some(10)),
+            kg_agent("%B", index.path(), Some(20)),
+        ];
+        let mut prober = fresh_prober();
+        let states =
+            KgWorkerState::default().pass(&agents, Some(&table), &mut prober, Instant::now());
+        assert_eq!(states["%A"], KnowledgeGraphState::Active);
+        assert_eq!(states["%B"], KnowledgeGraphState::Attention);
     }
 
     #[test]

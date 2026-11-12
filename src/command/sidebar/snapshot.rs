@@ -55,6 +55,9 @@ pub struct SidebarSnapshot {
     /// Pane IDs of agents manually marked as sleeping by the user.
     #[serde(default)]
     pub sleeping_pane_ids: HashSet<String>,
+    /// Knowledge-graph state per pane ID (fork). Missing from older daemons.
+    #[serde(default)]
+    pub knowledge_graph: HashMap<String, crate::knowledge_graph::KnowledgeGraphState>,
     /// Grouping the daemon ordered `agents` with, if any. Clients render the
     /// grouping the daemon sorted by rather than re-deriving it from config.
     #[serde(default)]
@@ -443,6 +446,7 @@ pub(crate) fn build_snapshot(input: SnapshotInputs) -> SidebarSnapshot {
         check_statuses,
         interrupted_pane_ids,
         sleeping_pane_ids: live_sleeping,
+        knowledge_graph: HashMap::new(),
         group_by,
         expanded_groups,
         stale_pane_ids,
@@ -860,6 +864,16 @@ mod tests {
         let restored: SidebarSnapshot = serde_json::from_value(json).unwrap();
         assert_eq!(restored.group_by, None);
         assert_eq!(restored.stale_threshold_secs, STALE_THRESHOLD_SECS);
+    }
+
+    #[test]
+    fn snapshot_without_knowledge_graph_deserializes() {
+        let snapshot = build_snapshot(SnapshotInputs::default());
+        let mut json: serde_json::Value = serde_json::to_value(&snapshot).unwrap();
+        let removed = json.as_object_mut().unwrap().remove("knowledge_graph");
+        assert!(removed.is_some(), "the snapshot serializes the field");
+        let restored: SidebarSnapshot = serde_json::from_value(json).unwrap();
+        assert!(restored.knowledge_graph.is_empty());
     }
 
     #[test]

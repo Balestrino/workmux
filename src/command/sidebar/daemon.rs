@@ -215,6 +215,7 @@ fn snapshots_equal(
         check_statuses: _,
         interrupted_pane_ids: _,
         sleeping_pane_ids: _,
+        knowledge_graph: _,
         group_by: _,
         expanded_groups: _,
         stale_pane_ids: _,
@@ -236,6 +237,7 @@ fn snapshots_equal(
         && left.check_statuses == right.check_statuses
         && left.interrupted_pane_ids == right.interrupted_pane_ids
         && left.sleeping_pane_ids == right.sleeping_pane_ids
+        && left.knowledge_graph == right.knowledge_graph
         && left.group_by == right.group_by
         && left.expanded_groups == right.expanded_groups
         && left.stale_pane_ids == right.stale_pane_ids
@@ -1397,6 +1399,70 @@ fn next_audit_path(
 /// Watches Git metadata and, where efficient, worktree roots. Events are debounced
 /// per worktree before status refresh. Polling covers platforms or roots without
 /// complete worktree watches, and a rolling audit detects silent event loss.
+type KnowledgeGraphCache =
+    Arc<Mutex<HashMap<String, crate::knowledge_graph::KnowledgeGraphState>>>;
+
+/// How often the knowledge-graph worker rescans processes and checks whether
+/// an index root is due for a probe (probes themselves are rarer).
+const KNOWLEDGE_GRAPH_PASS_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Fork: computes each agent's knowledge-graph state off the daemon loop.
+/// Reads `/proc` and runs at most one `codegraph status --json` per index
+/// root per minute; never writes to an index.
+fn spawn_knowledge_graph_worker(
+    term: Arc<AtomicBool>,
+    dirty_flag: Arc<AtomicBool>,
+    wake_tx: std::sync::mpsc::SyncSender<()>,
+) -> (
+    KnowledgeGraphCache,
+    std::sync::mpsc::Sender<Vec<crate::knowledge_graph::KgAgent>>,
+) {
+    use crate::knowledge_graph::{CodegraphProber, KgWorkerState, ProcTable};
+    let cache: KnowledgeGraphCache = Arc::new(Mutex::new(HashMap::new()));
+    let cache_clone = cache.clone();
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<crate::knowledge_graph::KgAgent>>();
+
+    thread::spawn(move || {
+        let mut state = KgWorkerState::default();
+        let mut prober = CodegraphProber::default();
+        let mut agents: Vec<crate::knowledge_graph::KgAgent> = Vec::new();
+        let mut last_pass: Option<Instant> = None;
+        while !term.load(Ordering::Relaxed) {
+            let mut changed = false;
+            match rx.recv_timeout(KNOWLEDGE_GRAPH_PASS_INTERVAL) {
+                Ok(first) => {
+                    // Only the newest list matters.
+                    let latest = rx.try_iter().last().unwrap_or(first);
+                    if latest != agents {
+                        agents = latest;
+                        changed = true;
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+            let now = Instant::now();
+            let due = last_pass
+                .is_none_or(|last| now.duration_since(last) >= KNOWLEDGE_GRAPH_PASS_INTERVAL);
+            if !changed && !due {
+                continue;
+            }
+            last_pass = Some(now);
+            let procs = ProcTable::read(std::path::Path::new("/proc"));
+            let states = state.pass(&agents, procs.as_ref(), &mut prober, now);
+            let mut current = cache_clone.lock().unwrap();
+            if *current != states {
+                *current = states;
+                drop(current);
+                dirty_flag.store(true, Ordering::Relaxed);
+                let _ = wake_tx.try_send(());
+            }
+        }
+    });
+
+    (cache, tx)
+}
+
 fn spawn_git_worker(
     term: Arc<AtomicBool>,
     dirty_flag: Arc<AtomicBool>,
@@ -2356,6 +2422,8 @@ pub fn run() -> Result<()> {
     );
     let (git_cache, git_path_tx) =
         spawn_git_worker(term.clone(), publication_dirty.clone(), wake_tx.clone());
+    let (knowledge_graph_cache, knowledge_graph_tx) =
+        spawn_knowledge_graph_worker(term.clone(), publication_dirty.clone(), wake_tx.clone());
     let (pr_cache, check_cache, github_path_tx) =
         spawn_github_worker(term.clone(), publication_dirty.clone(), wake_tx);
 
@@ -2585,6 +2653,7 @@ pub fn run() -> Result<()> {
             }
             last_interrupted = output.next_interrupted;
             output.snapshot.config_version = config_version.load(Ordering::Relaxed);
+            output.snapshot.knowledge_graph = knowledge_graph_cache.lock().unwrap().clone();
             {
                 let cfg = config.lock().unwrap();
                 let views = cfg.sidebar.views.as_deref().unwrap_or_default();
@@ -2648,6 +2717,21 @@ pub fn run() -> Result<()> {
                 Vec::new()
             };
             let _ = git_path_tx.send(entries);
+            let knowledge_graph_entries: Vec<crate::knowledge_graph::KgAgent> = output
+                .snapshot
+                .agents
+                .iter()
+                .filter(|agent| agent.remote.is_none())
+                .map(|agent| crate::knowledge_graph::KgAgent {
+                    pane_id: agent.pane_id.clone(),
+                    path: agent.path.clone(),
+                    pane_pid: tmux_state
+                        .live_panes
+                        .get(&agent.pane_id)
+                        .and_then(|pane| pane.pid),
+                })
+                .collect();
+            let _ = knowledge_graph_tx.send(knowledge_graph_entries);
 
             let github_entries: Vec<GithubWorkerPath> = if git_status_enabled {
                 output
@@ -3632,6 +3716,7 @@ mod tests {
             check_statuses: HashMap::new(),
             interrupted_pane_ids: HashSet::new(),
             sleeping_pane_ids: HashSet::new(),
+            knowledge_graph: HashMap::new(),
             agents: Vec::new(),
             config_version: 0,
         }

@@ -2452,6 +2452,7 @@ mod tests {
             check_statuses: HashMap::new(),
             interrupted_pane_ids: std::collections::HashSet::new(),
             sleeping_pane_ids: std::collections::HashSet::new(),
+            knowledge_graph: std::collections::HashMap::new(),
             agents: vec![
                 selection_agent("%host-agent", "@host"),
                 selection_agent("%other-agent", "@other"),
@@ -2695,6 +2696,7 @@ mod grouping_tests {
             check_statuses: HashMap::new(),
             interrupted_pane_ids: std::collections::HashSet::new(),
             sleeping_pane_ids: std::collections::HashSet::new(),
+            knowledge_graph: std::collections::HashMap::new(),
             agents,
             config_version: 0,
         }
