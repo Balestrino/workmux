@@ -167,6 +167,7 @@ const DEFAULT_TILE_TEMPLATES: &[&str] = &[
     "{primary} {pane_suffix} {fill} {elapsed}",
     "{secondary} {fill} {git_stats}",
     "{pane_title} {fill} {pr_number} {pr_checks}",
+    "{knowledge_graph}",
 ];
 const DEFAULT_HORIZONTAL_TEMPLATES: &[&str] = &[
     "{status_icon} {primary} {pane_suffix} {fill} {elapsed}",
@@ -181,6 +182,7 @@ const DEFAULT_HORIZONTAL_TEMPLATES: &[&str] = &[
 const DEFAULT_GROUPED_TILE_TEMPLATES: &[&str] = &[
     "{primary} {pane_suffix} {fill} {pr_number} {elapsed}",
     "{pane_title} {fill} {pr_checks} {git_stats}",
+    "{knowledge_graph}",
 ];
 
 const DEFAULT_GROUP_HEADER_TEMPLATE: &str = "{group} {fill} {group_count}";
@@ -333,6 +335,8 @@ pub struct SidebarApp {
     pub pr_statuses: HashMap<PathBuf, PrSummary>,
     /// GitHub check summary per worktree path (received from daemon snapshots).
     pub check_statuses: HashMap<PathBuf, CheckSummary>,
+    /// Fork: knowledge-graph state per pane ID, from the daemon.
+    pub knowledge_graph: HashMap<String, crate::knowledge_graph::KnowledgeGraphState>,
     /// Pane IDs of agents detected as interrupted by the daemon.
     pub interrupted_pane_ids: std::collections::HashSet<String>,
     /// Pane IDs of agents manually marked as sleeping by the user.
@@ -426,6 +430,7 @@ impl SidebarApp {
             git_statuses: HashMap::new(),
             pr_statuses: HashMap::new(),
             check_statuses: HashMap::new(),
+            knowledge_graph: HashMap::new(),
             interrupted_pane_ids: std::collections::HashSet::new(),
             sleeping_pane_ids: std::collections::HashSet::new(),
             templates: ParsedTemplates {
@@ -528,6 +533,7 @@ impl SidebarApp {
             git_statuses: HashMap::new(),
             pr_statuses: HashMap::new(),
             check_statuses: HashMap::new(),
+            knowledge_graph: HashMap::new(),
             interrupted_pane_ids: std::collections::HashSet::new(),
             sleeping_pane_ids: std::collections::HashSet::new(),
             templates,
@@ -581,6 +587,7 @@ impl SidebarApp {
         self.git_statuses = snapshot.git_statuses;
         self.pr_statuses = snapshot.pr_statuses;
         self.check_statuses = snapshot.check_statuses;
+        self.knowledge_graph = snapshot.knowledge_graph;
         self.interrupted_pane_ids = snapshot.interrupted_pane_ids;
         self.sleeping_pane_ids = snapshot.sleeping_pane_ids;
 
@@ -845,6 +852,10 @@ impl SidebarApp {
                 .check_statuses
                 .values()
                 .any(|summary| matches!(summary.state, crate::github::CheckState::Pending { .. }))
+            || self.agents.iter().any(|agent| {
+                self.knowledge_graph.get(&agent.pane_id)
+                    == Some(&crate::knowledge_graph::KnowledgeGraphState::Active)
+            })
         {
             return Some(ANIMATION_INTERVAL);
         }
@@ -2198,8 +2209,9 @@ mod tests {
 
     #[test]
     fn default_multiline_templates_show_the_pull_request() {
+        // The fork's knowledge-graph line follows the pull request line.
         assert_eq!(
-            DEFAULT_TILE_TEMPLATES.last(),
+            DEFAULT_TILE_TEMPLATES.iter().rev().nth(1),
             Some(&"{pane_title} {fill} {pr_number} {pr_checks}")
         );
         assert_eq!(
@@ -2450,9 +2462,9 @@ mod tests {
             git_statuses: HashMap::new(),
             pr_statuses: HashMap::new(),
             check_statuses: HashMap::new(),
+            knowledge_graph: HashMap::new(),
             interrupted_pane_ids: std::collections::HashSet::new(),
             sleeping_pane_ids: std::collections::HashSet::new(),
-            knowledge_graph: std::collections::HashMap::new(),
             agents: vec![
                 selection_agent("%host-agent", "@host"),
                 selection_agent("%other-agent", "@other"),
@@ -2511,6 +2523,31 @@ mod tests {
                 },
                 meta: None,
             },
+        );
+        assert_eq!(app.refresh_interval(), Some(Duration::from_millis(250)));
+    }
+
+    #[test]
+    fn default_tiles_end_with_the_knowledge_graph_line() {
+        for templates in [DEFAULT_TILE_TEMPLATES, DEFAULT_GROUPED_TILE_TEMPLATES] {
+            assert_eq!(templates.last(), Some(&"{knowledge_graph}"));
+        }
+        assert!(!DEFAULT_HORIZONTAL_TEMPLATES.contains(&"{knowledge_graph}"));
+        assert!(!DEFAULT_COMPACT_TEMPLATE.contains("{knowledge_graph}"));
+    }
+
+    #[test]
+    fn active_knowledge_graph_animates() {
+        let mut app = SidebarApp::test_with_template_error(TemplateError {
+            location: String::new(),
+            message: String::new(),
+        });
+        app.has_loaded_snapshot = true;
+        app.agents.push(selection_agent("%idle", "@host"));
+        assert_eq!(app.refresh_interval(), None);
+        app.knowledge_graph.insert(
+            "%idle".to_string(),
+            crate::knowledge_graph::KnowledgeGraphState::Active,
         );
         assert_eq!(app.refresh_interval(), Some(Duration::from_millis(250)));
     }
@@ -2694,9 +2731,9 @@ mod grouping_tests {
             git_statuses: HashMap::new(),
             pr_statuses: HashMap::new(),
             check_statuses: HashMap::new(),
+            knowledge_graph: HashMap::new(),
             interrupted_pane_ids: std::collections::HashSet::new(),
             sleeping_pane_ids: std::collections::HashSet::new(),
-            knowledge_graph: std::collections::HashMap::new(),
             agents,
             config_version: 0,
         }

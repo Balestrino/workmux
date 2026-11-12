@@ -2504,6 +2504,34 @@ mod tests {
     }
 
     #[test]
+    fn knowledge_graph_line_fits_a_narrow_sidebar() {
+        use crate::command::sidebar::template::parser::parse_line;
+        use crate::knowledge_graph::KnowledgeGraphState as S;
+
+        for (state, text) in [
+            (S::None, "No knowledge graph"),
+            (S::Available, "\u{25cb} codegraph"),
+            (S::Attention, "\u{26a0} codegraph"),
+            (S::Active, "\u{25cf} codegraph"),
+        ] {
+            let mut app = tile_fixture();
+            app.agents.truncate(1);
+            app.templates.compact = parse_line("{knowledge_graph}").unwrap();
+            app.knowledge_graph
+                .insert(app.agents[0].pane_id.clone(), state);
+            app.rebuild_rows();
+            let mut terminal = Terminal::new(TestBackend::new(25, 3)).unwrap();
+            terminal.draw(|f| render_sidebar(f, &mut app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let row = (0..3)
+                .map(|y| drawn_row(buffer, y))
+                .find(|row| row.contains(text))
+                .unwrap_or_else(|| panic!("no row shows {text:?}"));
+            assert!(crate::util::display_width(&row) <= 25, "{row:?}");
+        }
+    }
+
+    #[test]
     fn render_sidebar_shows_exit_confirmation() {
         let backend = TestBackend::new(34, 5);
         let mut terminal = Terminal::new(backend).unwrap();

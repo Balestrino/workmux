@@ -555,6 +555,7 @@ mod tests {
             agent_label: String::new(),
             idx: Some(0),
             spinner_frame: 0,
+            knowledge_graph: None,
         }
     }
 
