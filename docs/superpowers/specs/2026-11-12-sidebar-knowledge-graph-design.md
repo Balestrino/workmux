@@ -126,7 +126,12 @@ not used, or an index that has fallen behind the code).
 
 ## Left to the builder
 
-- Verify that `codegraph status --json` is read-only (no writes, no WAL
+- **Settled 2026-11-12 (decided by the person):** `codegraph status --json`
+  opens the database read-write and creates then removes SQLite's
+  `codegraph.db-wal` / `codegraph.db-shm`; the index data is not changed
+  (traced on CodeGraph 1.6.2: 1.5 s, 168 MB on a 197 MB index). The person
+  accepted it as the freshness probe; no other `codegraph` subcommand runs.
+- (Superseded by the line above.) Verify that `codegraph status --json` is read-only (no writes, no WAL
   checkpoint, no lock files, no daemon) on CodeGraph 1.6.2, and measure its
   time on a large index. If it is not read-only or is too slow (say, over
   2 s at idle), fall back to a cheaper staleness signal and document the
