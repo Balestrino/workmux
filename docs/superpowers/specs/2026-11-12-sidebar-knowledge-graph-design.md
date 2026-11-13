@@ -131,7 +131,36 @@ not used, or an index that has fallen behind the code).
   `codegraph.db-wal` / `codegraph.db-shm`; the index data is not changed
   (traced on CodeGraph 1.6.2: 1.5 s, 168 MB on a 197 MB index). The person
   accepted it as the freshness probe; no other `codegraph` subcommand runs.
-- (Superseded by the line above.) Verify that `codegraph status --json` is read-only (no writes, no WAL
+- **Amended 2026-11-13: no probe during a build.** The probe broke builds.
+  On a copy of a 5,572-file repository (CodeGraph 1.6.2), with
+  `codegraph status --json` run every 5 s, `codegraph init` failed once out
+  of one attempt and `codegraph index` twice out of two, all in "Resolving
+  refs" with `database is locked`; without the probe both completed (`init`
+  in 3.5 min, `state: complete`). A build on an empty database runs with an
+  in-memory rollback journal ("fast init") and switches back to WAL before
+  resolving references. The probe opens the database read-write, and
+  CodeGraph sets `journal_mode = WAL` on every read-write open: in `init`
+  the `-wal`/`-shm` files appeared 0.4 s after the first probe instead of
+  at "Resolving refs"; in `index` the probes themselves failed with
+  `database is locked` and the build still fell. The exact SQLite sequence
+  was not traced further. A small repository (10 s `init`) does not fail.
+  So the worker no longer probes a root while CodeGraph holds it, read
+  from its lock files without opening the database: `rebuild.pid` (JSON
+  with a `pid`; `codegraph index`, for the whole build) or `codegraph.lock`
+  (a bare pid; every write: the whole of `codegraph init`, a `sync`, a
+  server's auto-sync). A lock counts only if its pid is alive and, where
+  `/proc` shows its command line, runs `codegraph`/`codegraph.js`, so a
+  lock left by a dead process, a reused pid or a pid from a sandbox's
+  namespace does not stop the probes. `writer.pid` is not a build signal:
+  a connected server holds it all along. What the line shows meanwhile
+  (designer's call): a rebuild, or a root with no probe result yet (a
+  first `init`), counts as stale (`⚠`), since the index cannot be used; a
+  `codegraph.lock` on an index already probed keeps the last result, so a
+  server's auto-sync never flashes a warning. The probe stays due and runs
+  on the first pass (5 s) after the lock goes. Left open: a build that
+  starts while a probe is already running (one probe of a few seconds per
+  minute) is not prevented.
+- (Superseded by the "Settled 2026-11-12" line.) Verify that `codegraph status --json` is read-only (no writes, no WAL
   checkpoint, no lock files, no daemon) on CodeGraph 1.6.2, and measure its
   time on a large index. If it is not read-only or is too slow (say, over
   2 s at idle), fall back to a cheaper staleness signal and document the

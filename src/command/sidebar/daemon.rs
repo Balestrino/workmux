@@ -1407,7 +1407,8 @@ const KNOWLEDGE_GRAPH_PASS_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Fork: computes each agent's knowledge-graph state off the daemon loop.
 /// Reads `/proc` and runs at most one `codegraph status --json` per index
-/// root per minute; never writes to an index.
+/// root per minute, never while a CodeGraph build holds the index (the probe
+/// opens the database and would make the build fail).
 fn spawn_knowledge_graph_worker(
     term: Arc<AtomicBool>,
     dirty_flag: Arc<AtomicBool>,
