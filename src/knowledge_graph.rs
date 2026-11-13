@@ -134,10 +134,14 @@ impl Freshness {
     /// leaves no usable index until it ends; another write keeps the last
     /// result (a server's auto-sync must not flash a warning), and with no
     /// result yet (a first `codegraph init`) the index counts as stale.
-    pub fn record_build(&mut self, build: Build) {
-        if build == Build::Rebuild || !self.probed {
+    /// Returns whether it did: that state must be probed as soon as the
+    /// build ends.
+    pub fn record_build(&mut self, build: Build) -> bool {
+        let unusable = build == Build::Rebuild || !self.probed;
+        if unusable {
             self.stale = true;
         }
+        unusable
     }
 
     pub fn is_stale(&self) -> bool {
@@ -152,8 +156,9 @@ pub enum Build {
     /// `rebuild.pid`: a `codegraph index`, from before it recreates the
     /// database until the new index is complete.
     Rebuild,
-    /// `codegraph.lock`: any other write to the index, from the whole of a
-    /// `codegraph init` to a `codegraph sync` or a server's auto-sync.
+    /// `codegraph.lock`: any other write to the index: a `codegraph init`
+    /// while it indexes (its short steps before and after run without it),
+    /// a `codegraph sync`, a server's auto-sync.
     Write,
 }
 
@@ -191,9 +196,10 @@ pub fn build_in_progress(root: &Path, holder_alive: fn(u32) -> bool) -> Option<B
 }
 
 /// Whether `pid` is a running CodeGraph process: alive to `kill(pid, 0)`
-/// and, where `/proc` shows its command line, running `codegraph` or
-/// `codegraph.js`. A pid reused by another program, or one from another pid
-/// namespace (an agent in a sandbox), is not a holder.
+/// and, where `/proc` shows its command line, running CodeGraph (see
+/// [`runs_codegraph`]). A pid reused by another program is not a holder;
+/// neither is a pid from another pid namespace, so a build inside a sandbox
+/// sharing the worktree is not protected from the probe.
 pub fn codegraph_process_alive(pid: u32) -> bool {
     let Ok(raw) = i32::try_from(pid) else {
         return false;
@@ -205,14 +211,38 @@ pub fn codegraph_process_alive(pid: u32) -> bool {
         return false;
     }
     match std::fs::read(format!("/proc/{pid}/cmdline")) {
-        Ok(cmdline) => cmdline.split(|b| *b == 0).any(|arg| {
-            let arg = String::from_utf8_lossy(arg);
-            let name = arg.rsplit('/').next().unwrap_or(&arg);
-            name == "codegraph" || name == "codegraph.js"
-        }),
+        Ok(raw) => {
+            let args: Vec<String> = raw
+                .split(|b| *b == 0)
+                .filter(|part| !part.is_empty())
+                .map(|part| String::from_utf8_lossy(part).into_owned())
+                .collect();
+            runs_codegraph(&args)
+        }
         // No `/proc` (macOS): liveness is all there is to go on.
         Err(_) => true,
     }
+}
+
+/// Whether a command line runs CodeGraph: the program is `codegraph`, or
+/// an interpreter (`node`, a shell) whose script, its first non-option
+/// argument, is `codegraph` or `codegraph.js`. Only the program and its
+/// script count, so `vim codegraph` or `rg codegraph` do not.
+fn runs_codegraph(args: &[String]) -> bool {
+    let base = |arg: &str| arg.rsplit('/').next().unwrap_or(arg).to_string();
+    let is_codegraph = |arg: &str| matches!(base(arg).as_str(), "codegraph" | "codegraph.js");
+    let Some(program) = args.first() else {
+        return false;
+    };
+    if is_codegraph(program) {
+        return true;
+    }
+    let interpreter = base(program);
+    (interpreter.starts_with("node") || matches!(interpreter.as_str(), "sh" | "bash" | "dash"))
+        && args[1..]
+            .iter()
+            .find(|arg| !arg.starts_with('-'))
+            .is_some_and(|script| is_codegraph(script))
 }
 
 /// Whether a command line runs the CodeGraph MCP server: an argument naming
@@ -448,8 +478,8 @@ impl Default for KgWorkerState {
 impl KgWorkerState {
     /// The state of every agent. Each index root is probed at most once per
     /// [`PROBE_INTERVAL`], however many agents share it, and never while a
-    /// build holds it: the first pass after the build ends probes it. Roots
-    /// no agent uses any more are forgotten.
+    /// build holds it; after a build that left the line stale, the first
+    /// pass probes at once. Roots no agent uses any more are forgotten.
     pub fn pass(
         &mut self,
         agents: &[KgAgent],
@@ -463,10 +493,17 @@ impl KgWorkerState {
         self.freshness.retain(|root, _| in_use.contains(root));
         for root in &in_use {
             if let Some(build) = build_in_progress(root, self.holder_alive) {
-                self.freshness
+                let unusable = self
+                    .freshness
                     .entry((*root).clone())
                     .or_default()
                     .record_build(build);
+                if unusable {
+                    // Probe on the first pass after the build, not a
+                    // minute after the last probe. An auto-sync keeps the
+                    // usual cadence.
+                    self.last_probe.remove(*root);
+                }
                 continue;
             }
             let due = self
@@ -878,7 +915,8 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(codegraph_process_alive(pid));
-        // This test binary is alive but is not CodeGraph (a reused pid).
+        // This test binary is alive but is not CodeGraph (a reused pid),
+        // even when a test filter passes it `codegraph` as an argument.
         assert!(!codegraph_process_alive(std::process::id()));
         drop(child.stdin.take());
         child.wait().unwrap();
@@ -887,16 +925,47 @@ mod tests {
     }
 
     #[test]
+    fn runs_codegraph_looks_at_the_program_and_its_script() {
+        assert!(runs_codegraph(&args(&[
+            "/opt/cg/node",
+            "--liftoff-only",
+            "--disable-warning=ExperimentalWarning",
+            "/opt/cg/lib/dist/bin/codegraph.js",
+            "init",
+            "--yes",
+        ])));
+        assert!(runs_codegraph(&args(&["/usr/local/bin/codegraph", "sync"])));
+        assert!(runs_codegraph(&args(&[
+            "/bin/sh",
+            "/home/u/.local/bin/codegraph",
+            "index"
+        ])));
+        assert!(!runs_codegraph(&args(&["vim", "codegraph"])));
+        assert!(!runs_codegraph(&args(&[
+            "rg",
+            "-n",
+            "x",
+            "src/codegraph.js"
+        ])));
+        assert!(!runs_codegraph(&args(&["/bin/sh", "-c", "codegraph init"])));
+        assert!(!runs_codegraph(&args(&[
+            "target/debug/deps/workmux-0",
+            "codegraph"
+        ])));
+        assert!(!runs_codegraph(&[]));
+    }
+
+    #[test]
     fn build_marks_stale_only_when_unusable_or_unknown() {
         let now = Instant::now();
         let mut f = Freshness::default();
-        f.record_build(Build::Write);
+        assert!(f.record_build(Build::Write));
         assert!(f.is_stale(), "a first init has no usable index");
         let mut f = Freshness::default();
         f.record(Some(&report(0, false, Some("complete"))), now);
-        f.record_build(Build::Write);
+        assert!(!f.record_build(Build::Write));
         assert!(!f.is_stale(), "an auto-sync keeps the last result");
-        f.record_build(Build::Rebuild);
+        assert!(f.record_build(Build::Rebuild));
         assert!(f.is_stale(), "a rebuild recreates the database");
         f.record(Some(&report(0, false, Some("complete"))), now);
         assert!(!f.is_stale());
@@ -951,6 +1020,30 @@ mod tests {
         let states = worker.pass(&agents, None, &mut prober, t0 + Duration::from_secs(66));
         assert_eq!(prober.calls, 1);
         assert_eq!(states["%1"], KnowledgeGraphState::Attention);
+        // A rebuild that ends within the minute is probed at once.
+        let codegraph = index.path().join(".codegraph");
+        std::fs::remove_file(codegraph.join("rebuild.pid")).unwrap();
+        std::fs::remove_file(codegraph.join("codegraph.lock")).unwrap();
+        let states = worker.pass(&agents, None, &mut prober, t0 + Duration::from_secs(71));
+        assert_eq!(prober.calls, 2);
+        assert_eq!(states["%1"], KnowledgeGraphState::Available);
+    }
+
+    #[test]
+    fn worker_keeps_the_cadence_through_an_auto_sync() {
+        let index = indexed_dir();
+        let agents = [kg_agent("%1", index.path(), None)];
+        let mut prober = fresh_prober();
+        let mut worker = worker_with_live_holders();
+        let t0 = Instant::now();
+        worker.pass(&agents, None, &mut prober, t0);
+        lock(index.path(), "codegraph.lock", "4242");
+        worker.pass(&agents, None, &mut prober, t0 + Duration::from_secs(5));
+        std::fs::remove_file(index.path().join(".codegraph/codegraph.lock")).unwrap();
+        worker.pass(&agents, None, &mut prober, t0 + Duration::from_secs(10));
+        assert_eq!(prober.calls, 1);
+        worker.pass(&agents, None, &mut prober, t0 + Duration::from_secs(60));
+        assert_eq!(prober.calls, 2);
     }
 
     #[test]

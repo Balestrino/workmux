@@ -147,19 +147,23 @@ not used, or an index that has fallen behind the code).
   So the worker no longer probes a root while CodeGraph holds it, read
   from its lock files without opening the database: `rebuild.pid` (JSON
   with a `pid`; `codegraph index`, for the whole build) or `codegraph.lock`
-  (a bare pid; every write: the whole of `codegraph init`, a `sync`, a
-  server's auto-sync). A lock counts only if its pid is alive and, where
-  `/proc` shows its command line, runs `codegraph`/`codegraph.js`, so a
-  lock left by a dead process, a reused pid or a pid from a sandbox's
-  namespace does not stop the probes. `writer.pid` is not a build signal:
+  (a bare pid; every write: `codegraph init` while it indexes, which is
+  the whole fast-init window, a `sync`, a server's auto-sync). A lock
+  counts only if its pid is alive and, where `/proc` shows its command
+  line, its program or interpreted script is `codegraph`/`codegraph.js`,
+  so a lock left by a dead process or a reused pid does not stop the
+  probes. Neither does a pid from a sandbox's namespace: a build inside a
+  sandbox sharing the worktree is therefore not protected. `writer.pid` is not a build signal:
   a connected server holds it all along. What the line shows meanwhile
   (designer's call): a rebuild, or a root with no probe result yet (a
   first `init`), counts as stale (`⚠`), since the index cannot be used; a
   `codegraph.lock` on an index already probed keeps the last result, so a
-  server's auto-sync never flashes a warning. The probe stays due and runs
-  on the first pass (5 s) after the lock goes. Left open: a build that
+  server's auto-sync never flashes a warning. After a build that made the
+  line stale the probe runs on the first pass (5 s) after the lock goes;
+  an auto-sync keeps the once-a-minute cadence. Left open: a build that
   starts while a probe is already running (one probe of a few seconds per
-  minute) is not prevented.
+  minute), and the few milliseconds in which `init` has created the
+  database but not yet taken `codegraph.lock`, are not covered.
 - (Superseded by the "Settled 2026-11-12" line.) Verify that `codegraph status --json` is read-only (no writes, no WAL
   checkpoint, no lock files, no daemon) on CodeGraph 1.6.2, and measure its
   time on a large index. If it is not read-only or is too slow (say, over
