@@ -21,12 +21,12 @@ not used, or an index that has fallen behind the code).
   lines, showing the knowledge-graph state of that agent.
 - Four states, decided by the person:
 
-  | State | Shown | Meaning |
-  |---|---|---|
-  | none | `No knowledge graph` (dimmed) | no server connected to the agent and no index for its worktree |
+  | State     | Shown                           | Meaning                                                                                                                                                         |
+  | --------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | none      | `No knowledge graph` (dimmed)   | no server connected to the agent and no index for its worktree                                                                                                  |
   | available | `○ codegraph` (dimmed, neutral) | server connected, but the worktree has no index. This is the normal case today: the server is configured for every agent, indexes exist only in a few checkouts |
-  | attention | `⚠ codegraph` (warning colour) | needs action: an index exists but the agent has no server connected, **or** the index is stale (see below) |
-  | active | `● codegraph`, green, blinking | index present and fresh, and the server connected to this agent |
+  | attention | `⚠ codegraph` (warning colour)  | needs action: an index exists but the agent has no server connected, **or** the index is stale (see below)                                                      |
+  | active    | `● codegraph`, green, blinking  | index present and fresh, and the server connected to this agent                                                                                                 |
 
 - "Connected" means the graph's MCP server process is running as a
   descendant of the agent's pane process, whether or not the agent is
