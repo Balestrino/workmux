@@ -27,14 +27,14 @@
   - `Active` → `● codegraph`, success colour, alternating with dimmed every 500 ms.
 - **Decision table** (`Unknown` connection never yields `Attention` for a missing server):
 
-  | index | connected | stale | state |
-  |---|---|---|---|
-  | none | yes | – | Available |
-  | none | no / unknown | – | None |
-  | yes | – | yes | Attention |
-  | yes | yes | no | Active |
-  | yes | no | no | Attention |
-  | yes | unknown | no | Available |
+  | index | connected    | stale | state     |
+  | ----- | ------------ | ----- | --------- |
+  | none  | yes          | –     | Available |
+  | none  | no / unknown | –     | None      |
+  | yes   | –            | yes   | Attention |
+  | yes   | yes          | no    | Active    |
+  | yes   | no           | no    | Attention |
+  | yes   | unknown      | no    | Available |
 
 - Until the first probe of a root has finished, its index counts as fresh. A failed or timed-out probe keeps the previous freshness, or fresh when there is none.
 - Remote agents (`agent.remote.is_some()`) get no status: the token renders empty.
@@ -54,10 +54,12 @@
 ### Task 1: State model, index lookup and freshness tracker
 
 **Files:**
+
 - Create: `src/knowledge_graph.rs`
 - Modify: `src/main.rs` (add `mod knowledge_graph;` next to `mod wide_cell_backend;`)
 
 **Interfaces:**
+
 - Produces:
   - `#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)] pub enum KnowledgeGraphState { None, Available, Attention, Active }`
   - `#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum Connection { Yes, No, Unknown }`
@@ -84,9 +86,11 @@
 ### Task 2: Server connection from `/proc`
 
 **Files:**
+
 - Modify: `src/knowledge_graph.rs`
 
 **Interfaces:**
+
 - Consumes: `Connection` (Task 1).
 - Produces:
   - `pub struct ProcTable { children: HashMap<u32, Vec<u32>>, cmdlines: HashMap<u32, Vec<String>> }`
@@ -106,11 +110,13 @@
 ### Task 3: Daemon worker and snapshot field
 
 **Files:**
+
 - Modify: `src/command/sidebar/daemon.rs`: a new `spawn_knowledge_graph_worker` next to `spawn_git_worker` (~line 1400); start it next to `spawn_git_worker` (~line 2357); send entries next to `git_path_tx.send` (~line 2650); copy the cache into `output.snapshot` after `compute_tick`, next to `window_views` (~line 2590).
 - Modify: `src/command/sidebar/snapshot.rs`: `SidebarSnapshot` gets `#[serde(default)] pub knowledge_graph: HashMap<String, KnowledgeGraphState>`, keyed by `pane_id`.
 - Modify: `src/knowledge_graph.rs`: the worker's pure core.
 
 **Interfaces:**
+
 - Consumes: everything from Tasks 1–2.
 - Produces:
   - `pub struct KgAgent { pub pane_id: String, pub path: PathBuf, pub pane_pid: Option<u32> }`
@@ -126,6 +132,7 @@
 
   In `src/command/sidebar/snapshot.rs` tests:
   - `snapshot_without_knowledge_graph_deserializes`: a serialized snapshot with the `knowledge_graph` key removed deserializes with an empty map.
+
 - [ ] **Step 2: Run** `nice -n 19 cargo test --bin workmux knowledge_graph:: snapshot::`. Expected: the new tests fail.
 - [ ] **Step 3: Implement** `KgWorkerState::pass`, `CodegraphProber`, the snapshot field and the daemon wiring. In `CodegraphProber`, check once whether `ionice` is on PATH and cache the answer.
 - [ ] **Step 4: Run** the tests, then `nice -n 19 cargo test --bin workmux sidebar::`. Expected: all pass.
@@ -134,11 +141,13 @@
 ### Task 4: `{knowledge_graph}` token, blink and default templates
 
 **Files:**
+
 - Modify: `src/command/sidebar/template/parser.rs`: add `TokenId::KnowledgeGraph`, named `"knowledge_graph"` in both name maps and in the token list (~lines 21-53, 100, 250, 471).
 - Modify: `src/command/sidebar/template/context.rs`: add `RowContext.knowledge_graph: Option<KnowledgeGraphState>`, filled in `RowContext::new` (~line 160) from `app.knowledge_graph.get(&agent.pane_id)` and set to `None` for remote agents; add `pub fn knowledge_graph_spans(&self) -> (Vec<(String, Style)>, usize)`, dispatched in `natural_width` and in the span builder next to `PrChecks`.
 - Modify: `src/command/sidebar/app.rs`: add the field `knowledge_graph: HashMap<String, KnowledgeGraphState>`, copied from the snapshot next to `check_statuses` (~line 583); `refresh_interval` returns `ANIMATION_INTERVAL` when any listed agent's state is `Active`; add `"{knowledge_graph}"` as the last line of `DEFAULT_TILE_TEMPLATES` and of `DEFAULT_GROUPED_TILE_TEMPLATES`. `DEFAULT_HORIZONTAL_TEMPLATES` and `DEFAULT_COMPACT_TEMPLATE` stay unchanged.
 
 **Interfaces:**
+
 - Consumes: `KnowledgeGraphState` (Task 1) and `SidebarSnapshot.knowledge_graph` (Task 3).
 - Produces: the token `{knowledge_graph}` for user templates.
 
@@ -154,6 +163,7 @@
 ### Task 5: Docs, FORK.md, checks and isolated try
 
 **Files:**
+
 - Modify: `docs/src/content/docs/guide/sidebar/customization.md`: the token in the token list, the default tile templates, and the four states.
 - Modify: `FORK.md`: under "Fork features", add «Knowledge-graph line» (what it shows, the read-only probe and its accepted SQLite side files); a planned follow-up: Graphify, Serena and similar tools as configurable adapters (index marker, server signature, freshness probe).
 - Modify: the spec, setting its status to `accepted 2026-11-12` and recording that the person chose `codegraph status` despite the SQLite side files.
@@ -167,4 +177,5 @@
   3. a plain temp dir with a server child. Expected: `○`.
 
   Put a stub `codegraph` script first in PATH that prints the measured JSON with no pending changes. Capture the sidebar.
+
 - [ ] **Step 5: Commit** with the message `docs(fork): knowledge-graph line`. Then open a PR to `Balestrino/workmux` `main`, get an independent review, and merge with `--merge`.

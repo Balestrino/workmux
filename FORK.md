@@ -67,7 +67,14 @@ Changes are not proposed upstream.
   `codegraph serve --mcp` process below the agent's pane (`/proc`), and
   `codegraph status --json` run by the daemon at most once a minute per
   index at the lowest priority (it opens the database, so SQLite creates and
-  removes `-wal`/`-shm`; accepted 2026-11-12, the index is never changed).
+  removes `-wal`/`-shm`; accepted 2026-11-12). The probe is skipped while a
+  CodeGraph build holds the index (`.codegraph/rebuild.pid` or
+  `codegraph.lock` whose pid is a running `codegraph`): opening the database
+  then made `codegraph init`/`index` fail with `database is locked` on large
+  repositories (2026-11-13). During a build the line keeps its last state,
+  or shows `⚠` during a full `codegraph index` and before the first result,
+  and then the first pass after the build probes at once. A build in a
+  sandbox (another pid namespace) is not seen, so it is not protected.
   Spec and plan: `docs/superpowers/{specs,plans}/2026-11-12-sidebar-knowledge-graph*`.
   **Planned:** Graphify, Serena and similar tools as adapters (index marker,
   server signature, freshness probe) chosen by configuration.

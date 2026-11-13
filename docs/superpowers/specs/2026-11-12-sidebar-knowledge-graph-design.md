@@ -21,12 +21,12 @@ not used, or an index that has fallen behind the code).
   lines, showing the knowledge-graph state of that agent.
 - Four states, decided by the person:
 
-  | State | Shown | Meaning |
-  |---|---|---|
-  | none | `No knowledge graph` (dimmed) | no server connected to the agent and no index for its worktree |
+  | State     | Shown                           | Meaning                                                                                                                                                         |
+  | --------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | none      | `No knowledge graph` (dimmed)   | no server connected to the agent and no index for its worktree                                                                                                  |
   | available | `○ codegraph` (dimmed, neutral) | server connected, but the worktree has no index. This is the normal case today: the server is configured for every agent, indexes exist only in a few checkouts |
-  | attention | `⚠ codegraph` (warning colour) | needs action: an index exists but the agent has no server connected, **or** the index is stale (see below) |
-  | active | `● codegraph`, green, blinking | index present and fresh, and the server connected to this agent |
+  | attention | `⚠ codegraph` (warning colour)  | needs action: an index exists but the agent has no server connected, **or** the index is stale (see below)                                                      |
+  | active    | `● codegraph`, green, blinking  | index present and fresh, and the server connected to this agent                                                                                                 |
 
 - "Connected" means the graph's MCP server process is running as a
   descendant of the agent's pane process, whether or not the agent is
@@ -131,7 +131,40 @@ not used, or an index that has fallen behind the code).
   `codegraph.db-wal` / `codegraph.db-shm`; the index data is not changed
   (traced on CodeGraph 1.6.2: 1.5 s, 168 MB on a 197 MB index). The person
   accepted it as the freshness probe; no other `codegraph` subcommand runs.
-- (Superseded by the line above.) Verify that `codegraph status --json` is read-only (no writes, no WAL
+- **Amended 2026-11-13: no probe during a build.** The probe broke builds.
+  On a copy of a 5,572-file repository (CodeGraph 1.6.2), with
+  `codegraph status --json` run every 5 s, `codegraph init` failed once out
+  of one attempt and `codegraph index` twice out of two, all in "Resolving
+  refs" with `database is locked`; without the probe both completed (`init`
+  in 3.5 min, `state: complete`). A build on an empty database runs with an
+  in-memory rollback journal ("fast init") and switches back to WAL before
+  resolving references. The probe opens the database read-write, and
+  CodeGraph sets `journal_mode = WAL` on every read-write open: in `init`
+  the `-wal`/`-shm` files appeared 0.4 s after the first probe instead of
+  at "Resolving refs"; in `index` the probes themselves failed with
+  `database is locked` and the build still fell. The exact SQLite sequence
+  was not traced further. A small repository (10 s `init`) does not fail.
+  So the worker no longer probes a root while CodeGraph holds it, read
+  from its lock files without opening the database: `rebuild.pid` (JSON
+  with a `pid`; `codegraph index`, for the whole build) or `codegraph.lock`
+  (a bare pid; every write: `codegraph init` while it indexes, which is
+  the whole fast-init window, a `sync`, a server's auto-sync). A lock
+  counts only if its pid is alive and, where `/proc` shows its command
+  line, its program or interpreted script is `codegraph`/`codegraph.js`,
+  so a lock left by a dead process or a reused pid does not stop the
+  probes. Neither does a pid from a sandbox's namespace: a build inside a
+  sandbox sharing the worktree is therefore not protected. `writer.pid` is not a build signal:
+  a connected server holds it all along. What the line shows meanwhile
+  (designer's call): a rebuild, or a root with no probe result yet (a
+  first `init`), counts as stale (`⚠`), since the index cannot be used; a
+  `codegraph.lock` on an index already probed keeps the last result, so a
+  server's auto-sync never flashes a warning. After a build that made the
+  line stale the probe runs on the first pass (5 s) after the lock goes;
+  an auto-sync keeps the once-a-minute cadence. Left open: a build that
+  starts while a probe is already running (one probe of a few seconds per
+  minute), and the few milliseconds in which `init` has created the
+  database but not yet taken `codegraph.lock`, are not covered.
+- (Superseded by the "Settled 2026-11-12" line.) Verify that `codegraph status --json` is read-only (no writes, no WAL
   checkpoint, no lock files, no daemon) on CodeGraph 1.6.2, and measure its
   time on a large index. If it is not read-only or is too slow (say, over
   2 s at idle), fall back to a cheaper staleness signal and document the
